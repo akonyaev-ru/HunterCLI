@@ -1,11 +1,14 @@
 # -*- coding: utf-8 -*-
-"""Проставить версию из тега релиза в huntercli/__init__.py.
+"""Проставить версию из тега релиза.
 
-Вызывается из GitHub Actions при сборке по тегу: тег `v2.1.0` превращается в
-`__version__ = "2.1.0"`. Локально запускать не нужно — версия в исходниках уже
-актуальна.
+Вызывается из GitHub Actions при сборке по тегу: тег `v2026.2` превращается
+в `__version__ = "2026.2"` в коде и в свойства собранного .exe. Локально
+запускать не нужно — версия в исходниках уже актуальна.
 
-Запуск: HUNTER_VERSION=v2.1.0 python tools/set_version.py
+Нумерация как у Umbra: год и порядковый выпуск внутри года (2026.1, 2026.2),
+при необходимости с третьим числом для исправлений (2026.2.1).
+
+Запуск: HUNTER_VERSION=v2026.2 python tools/set_version.py
 """
 
 from __future__ import annotations
@@ -22,10 +25,41 @@ from huntercli import force_utf8_output  # noqa: E402  (нужен ROOT в sys.p
 
 force_utf8_output()
 
-TARGET = os.path.join(ROOT, "huntercli", "__init__.py")
+PACKAGE = os.path.join(ROOT, "huntercli", "__init__.py")
+RESOURCE = os.path.join(ROOT, "version_info.txt")
 
 VERSION_RE = re.compile(r'^__version__\s*=\s*"[^"]*"', re.M)
-SEMVER_RE = re.compile(r"^\d+\.\d+(\.\d+)?([-+][0-9A-Za-z.-]+)?$")
+TAG_RE = re.compile(r"^[vV]?(\d+)\.(\d+)(?:\.(\d+))?(?:\.(\d+))?$")
+
+
+def _write(path: str, text: str) -> None:
+    io.open(path, "w", encoding="utf-8", newline="\n").write(text)
+
+
+def _patch_package(version: str) -> bool:
+    source = io.open(PACKAGE, encoding="utf-8").read()
+    updated, count = VERSION_RE.subn(f'__version__ = "{version}"', source, count=1)
+    if not count:
+        print(f"В {PACKAGE} не найдена строка __version__", file=sys.stderr)
+        return False
+    _write(PACKAGE, updated)
+    return True
+
+
+def _patch_resource(parts: list[str]) -> bool:
+    """Свойства .exe: четыре числа в filevers/prodvers и строковые поля."""
+    if not os.path.exists(RESOURCE):
+        return True  # ресурс необязателен
+    numbers = ", ".join(parts)
+    dotted = ".".join(parts[:3])
+    text = io.open(RESOURCE, encoding="utf-8").read()
+    for field in ("filevers", "prodvers"):
+        text = re.sub(rf"{field}=\(\d+,\s*\d+,\s*\d+,\s*\d+\)", f"{field}=({numbers})", text)
+    for field in ("FileVersion", "ProductVersion"):
+        text = re.sub(rf"StringStruct\('{field}', '[^']*'\)",
+                      f"StringStruct('{field}', '{dotted}')", text)
+    _write(RESOURCE, text)
+    return True
 
 
 def main() -> int:
@@ -34,18 +68,18 @@ def main() -> int:
         print("HUNTER_VERSION не задана — версию не трогаем", file=sys.stderr)
         return 0
 
-    version = raw[1:] if raw.startswith("v") else raw
-    if not SEMVER_RE.match(version):
+    match = TAG_RE.match(raw)
+    if not match:
         print(f"«{raw}» не похоже на версию — версию не трогаем", file=sys.stderr)
         return 1
 
-    source = io.open(TARGET, encoding="utf-8").read()
-    updated, count = VERSION_RE.subn(f'__version__ = "{version}"', source, count=1)
-    if not count:
-        print(f"В {TARGET} не найдена строка __version__", file=sys.stderr)
+    parts = list(match.groups(default="0"))
+    # 2026.1.0 -> «2026.1», 2026.2.1 -> «2026.2.1»: хвостовой ноль не пишем.
+    version = ".".join(parts[:3]).removesuffix(".0")
+
+    if not _patch_package(version) or not _patch_resource(parts):
         return 1
 
-    io.open(TARGET, "w", encoding="utf-8", newline="\n").write(updated)
     print(f"Версия проставлена: {version}")
     return 0
 

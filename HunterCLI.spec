@@ -55,6 +55,8 @@ exe = EXE(
     a.datas,
     [],
     name='HunterCLI',
+    # Свойства файла: версия и автор видны в «Подробно» у .exe.
+    version='version_info.txt',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
