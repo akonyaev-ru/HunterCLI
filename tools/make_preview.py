@@ -56,6 +56,10 @@ COLUMNS, ROWS = 112, 32
 MARGIN_X, MARGIN_TOP, MARGIN_BOTTOM = 210, 160, 190
 CORNER = 12
 
+#: Запас снизу. Rich оставляет под содержимым всего 8 px (сверху — 40 px под
+#: заголовок), из-за чего строка горячих клавиш прижималась к краю окна.
+BOTTOM_PAD = 26
+
 OUTPUT_PNG = os.path.join(ROOT, "docs", "preview.png")
 OUTPUT_SVG = os.path.join(ROOT, "docs", "preview.svg")
 
@@ -167,11 +171,19 @@ def render_terminal() -> tuple[str, float, float]:
     return svg, float(box.group(1)), float(box.group(2))
 
 
+def canvas_size(inner_w: float, inner_h: float) -> tuple[int, int]:
+    """Размер картинки. Считается здесь и только здесь: если растеризовать
+    по другой формуле, край изображения окажется обрезанным."""
+    return (
+        int(inner_w + MARGIN_X * 2),
+        int(inner_h + BOTTOM_PAD + MARGIN_TOP + MARGIN_BOTTOM),
+    )
+
+
 def compose(terminal: str, inner_w: float, inner_h: float) -> str:
     """Обернуть терминал в окно и положить на фон."""
-    win_w, win_h = inner_w, inner_h
-    canvas_w = win_w + MARGIN_X * 2
-    canvas_h = win_h + MARGIN_TOP + MARGIN_BOTTOM
+    win_w, win_h = inner_w, inner_h + BOTTOM_PAD
+    canvas_w, canvas_h = canvas_size(inner_w, inner_h)
     win_x, win_y = MARGIN_X, MARGIN_TOP
 
     # Заголовок окна занимает верхнюю полосу: Rich уже оставил под неё отступ
@@ -185,10 +197,12 @@ def compose(terminal: str, inner_w: float, inner_h: float) -> str:
             f'font-family="Segoe UI, Arial" font-size="14" fill="#b9b0ad">{glyph}</text>'
         )
 
+    # Терминал вставляем в его собственном размере: если растянуть его на всю
+    # высоту окна вместе с запасом снизу, текст поедет по вертикали.
     terminal_body = terminal.replace(
         '<svg class="rich-terminal"',
         f'<svg class="rich-terminal" x="{win_x}" y="{win_y}" '
-        f'width="{win_w}" height="{win_h}"',
+        f'width="{inner_w}" height="{inner_h}"',
         1,
     )
 
@@ -196,12 +210,31 @@ def compose(terminal: str, inner_w: float, inner_h: float) -> str:
 height="{canvas_h:.0f}" viewBox="0 0 {canvas_w:.0f} {canvas_h:.0f}">
   <defs>
     <linearGradient id="bg" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%" stop-color="#f4f4f5"/>
-      <stop offset="100%" stop-color="#e4e4e7"/>
+      <stop offset="0%" stop-color="#f5f5f6"/>
+      <stop offset="100%" stop-color="#e2e2e5"/>
     </linearGradient>
-    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
-      <feDropShadow dx="0" dy="24" stdDeviation="28" flood-color="#000000"
-                    flood-opacity="0.22"/>
+    <!-- Мягкое свечение под окном: фон перестаёт быть плоским, но остаётся
+         серым. Красный подмешан почти незаметно — только чтобы отозваться
+         на цвет самого приложения. -->
+    <radialGradient id="halo" cx="50%" cy="46%" r="62%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.95"/>
+      <stop offset="55%" stop-color="#ffffff" stop-opacity="0.30"/>
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="ember" cx="50%" cy="54%" r="46%">
+      <stop offset="0%" stop-color="#d6001c" stop-opacity="0.09"/>
+      <stop offset="100%" stop-color="#d6001c" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="vignette" cx="50%" cy="50%" r="72%">
+      <stop offset="52%" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="100%" stop-color="#000000" stop-opacity="0.11"/>
+    </radialGradient>
+    <pattern id="dots" width="28" height="28" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="1.6" fill="#3a3a40" opacity="0.07"/>
+    </pattern>
+    <filter id="shadow" x="-25%" y="-25%" width="150%" height="160%">
+      <feDropShadow dx="0" dy="28" stdDeviation="34" flood-color="#1a1214"
+                    flood-opacity="0.30"/>
     </filter>
     <clipPath id="window">
       <rect x="{win_x}" y="{win_y}" width="{win_w:.0f}" height="{win_h:.0f}" rx="{CORNER}"/>
@@ -209,6 +242,10 @@ height="{canvas_h:.0f}" viewBox="0 0 {canvas_w:.0f} {canvas_h:.0f}">
   </defs>
 
   <rect width="100%" height="100%" fill="url(#bg)"/>
+  <rect width="100%" height="100%" fill="url(#dots)"/>
+  <rect width="100%" height="100%" fill="url(#halo)"/>
+  <rect width="100%" height="100%" fill="url(#ember)"/>
+  <rect width="100%" height="100%" fill="url(#vignette)"/>
 
   <rect x="{win_x}" y="{win_y}" width="{win_w:.0f}" height="{win_h:.0f}" rx="{CORNER}"
         fill="#0f0d0d" filter="url(#shadow)"/>
@@ -265,8 +302,7 @@ def main() -> int:
     os.makedirs(os.path.dirname(OUTPUT_SVG), exist_ok=True)
     io.open(OUTPUT_SVG, "w", encoding="utf-8", newline="\n").write(svg)
 
-    width = int(inner_w + MARGIN_X * 2)
-    height = int(inner_h + MARGIN_TOP + MARGIN_BOTTOM)
+    width, height = canvas_size(inner_w, inner_h)
     if not rasterize(width, height):
         return 1
 
