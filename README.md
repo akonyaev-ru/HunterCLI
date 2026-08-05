@@ -3,7 +3,7 @@
 ![Python](https://img.shields.io/badge/python-3.12-blue)
 ![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)
 ![Platform](https://img.shields.io/badge/platform-Windows-lightgrey)
-![Interface](https://img.shields.io/badge/UI-TUI-red)
+![Interface](https://img.shields.io/badge/UI-TUI-informational)
 ![GitHub release](https://img.shields.io/github/v/release/akonyaev-ru/HunterCLI)
 ![Downloads](https://img.shields.io/github/downloads/akonyaev-ru/HunterCLI/total)
 ![Build](https://github.com/akonyaev-ru/HunterCLI/actions/workflows/build.yml/badge.svg)
