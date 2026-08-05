@@ -1,0 +1,19 @@
+name: Предложить улучшение
+description: Идея, как сделать программу удобнее
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: Что предлагаете
+      description: Опишите идею своими словами.
+    validations:
+      required: true
+
+  - type: textarea
+    id: why
+    attributes:
+      label: Зачем это нужно
+      description: Какую вашу задачу это решит? Что приходится делать сейчас вместо этого?
+    validations:
+      required: false

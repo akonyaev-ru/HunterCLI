@@ -1,0 +1,54 @@
+name: Сообщить об ошибке
+description: Что-то работает не так, как ожидалось
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Спасибо, что нашли время написать. Чем точнее описание, тем быстрее получится починить.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: Что произошло
+      description: Что вы делали и что увидели вместо ожидаемого.
+      placeholder: Нажал B, чтобы поднять резюме, — в журнале появилось «...»
+    validations:
+      required: true
+
+  - type: textarea
+    id: log
+    attributes:
+      label: Файл журнала
+      description: |
+        Приложите `hunter.log` — он лежит рядом с программой.
+        В нём нет ни пароля, ни токена, только ход работы.
+      render: text
+    validations:
+      required: false
+
+  - type: input
+    id: version
+    attributes:
+      label: Версия
+      description: Показывает `HunterCLI.exe --version` или первая строка журнала.
+      placeholder: "2.0.0"
+    validations:
+      required: true
+
+  - type: textarea
+    id: check
+    attributes:
+      label: Вывод HunterCLI.exe --check
+      description: Помогает сразу отсечь проблемы окружения (WebView2, права, сеть).
+      render: text
+    validations:
+      required: false
+
+  - type: input
+    id: windows
+    attributes:
+      label: Версия Windows
+      placeholder: "Windows 11 24H2"
+    validations:
+      required: false
