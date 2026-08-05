@@ -180,11 +180,42 @@ def canvas_size(inner_w: float, inner_h: float) -> tuple[int, int]:
     )
 
 
+def silk(canvas_w: float, canvas_h: float) -> str:
+    """Шёлковые волны на фоне — та же структура, что на скриншоте Umbra.
+
+    Три мягкие ленты: светлый разлив сверху, тёмная волна снизу справа и
+    светлая полоса поверх неё. Всё сильно размыто, поэтому границы не читаются
+    как линии — получается перетекание, а не рисунок.
+    """
+    def sweep(start: float, mid_a: float, mid_b: float, end: float) -> str:
+        """Кривая через весь кадр слева направо, с заходом за края."""
+        return (
+            f"M {canvas_w * -0.12:.0f} {canvas_h * start:.0f} "
+            f"C {canvas_w * 0.22:.0f} {canvas_h * mid_a:.0f}, "
+            f"{canvas_w * 0.58:.0f} {canvas_h * mid_b:.0f}, "
+            f"{canvas_w * 1.12:.0f} {canvas_h * end:.0f}"
+        )
+
+    #: (кривая, цвет, толщина в долях высоты, прозрачность)
+    bands = [
+        (sweep(0.42, 0.20, 0.34, 0.06), "#ffffff", 0.16, 0.85),
+        (sweep(0.24, 0.06, 0.16, -0.06), "#bcbcc8", 0.13, 0.45),
+        (sweep(1.00, 0.74, 0.94, 0.58), "#ffffff", 0.13, 0.90),
+        (sweep(1.16, 0.94, 1.12, 0.78), "#b6b6c4", 0.18, 0.55),
+    ]
+    return "\n".join(
+        f'    <path d="{path}" stroke="{color}" stroke-width="{canvas_h * thick:.0f}" '
+        f'stroke-linecap="round" fill="none" opacity="{alpha}"/>'
+        for path, color, thick, alpha in bands
+    )
+
+
 def compose(terminal: str, inner_w: float, inner_h: float) -> str:
     """Обернуть терминал в окно и положить на фон."""
     win_w, win_h = inner_w, inner_h + BOTTOM_PAD
     canvas_w, canvas_h = canvas_size(inner_w, inner_h)
     win_x, win_y = MARGIN_X, MARGIN_TOP
+    waves = silk(canvas_w, canvas_h)
 
     # Заголовок окна занимает верхнюю полосу: Rich уже оставил под неё отступ
     # (padding_top), поэтому текст дашборда под неё не залезает.
@@ -209,29 +240,16 @@ def compose(terminal: str, inner_w: float, inner_h: float) -> str:
     return f"""<svg xmlns="http://www.w3.org/2000/svg" width="{canvas_w:.0f}" \
 height="{canvas_h:.0f}" viewBox="0 0 {canvas_w:.0f} {canvas_h:.0f}">
   <defs>
-    <linearGradient id="bg" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%" stop-color="#f5f5f6"/>
-      <stop offset="100%" stop-color="#e2e2e5"/>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#fcfcfd"/>
+      <stop offset="42%" stop-color="#e9e9ed"/>
+      <stop offset="100%" stop-color="#c9c9d2"/>
     </linearGradient>
-    <!-- Мягкое свечение под окном: фон перестаёт быть плоским, но остаётся
-         серым. Красный подмешан почти незаметно — только чтобы отозваться
-         на цвет самого приложения. -->
-    <radialGradient id="halo" cx="50%" cy="46%" r="62%">
-      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.95"/>
-      <stop offset="55%" stop-color="#ffffff" stop-opacity="0.30"/>
-      <stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
-    </radialGradient>
-    <radialGradient id="ember" cx="50%" cy="54%" r="46%">
-      <stop offset="0%" stop-color="#d6001c" stop-opacity="0.09"/>
-      <stop offset="100%" stop-color="#d6001c" stop-opacity="0"/>
-    </radialGradient>
-    <radialGradient id="vignette" cx="50%" cy="50%" r="72%">
-      <stop offset="52%" stop-color="#000000" stop-opacity="0"/>
-      <stop offset="100%" stop-color="#000000" stop-opacity="0.11"/>
-    </radialGradient>
-    <pattern id="dots" width="28" height="28" patternUnits="userSpaceOnUse">
-      <circle cx="2" cy="2" r="1.6" fill="#3a3a40" opacity="0.07"/>
-    </pattern>
+    <!-- Размытие делает из трёх фигур единое перетекание. Без него это
+         читалось бы как аппликация из кусков бумаги. -->
+    <filter id="silk" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="46"/>
+    </filter>
     <filter id="shadow" x="-25%" y="-25%" width="150%" height="160%">
       <feDropShadow dx="0" dy="28" stdDeviation="34" flood-color="#1a1214"
                     flood-opacity="0.30"/>
@@ -242,10 +260,9 @@ height="{canvas_h:.0f}" viewBox="0 0 {canvas_w:.0f} {canvas_h:.0f}">
   </defs>
 
   <rect width="100%" height="100%" fill="url(#bg)"/>
-  <rect width="100%" height="100%" fill="url(#dots)"/>
-  <rect width="100%" height="100%" fill="url(#halo)"/>
-  <rect width="100%" height="100%" fill="url(#ember)"/>
-  <rect width="100%" height="100%" fill="url(#vignette)"/>
+  <g filter="url(#silk)">
+{waves}
+  </g>
 
   <rect x="{win_x}" y="{win_y}" width="{win_w:.0f}" height="{win_h:.0f}" rx="{CORNER}"
         fill="#0f0d0d" filter="url(#shadow)"/>
