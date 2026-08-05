@@ -13,6 +13,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+from .. import APP_NAME
 from ..engine import PHASE_LABEL, Phase, Snapshot
 from ..logbus import ERROR, LogBus, OK, STEP, WARN
 from . import banner
@@ -64,25 +65,43 @@ HOTKEYS = [
     ("H", "справка"),
 ]
 
-HELP_TEXT = [
-    ("Как это работает", ""),
-    ("", "Площадка разрешает поднимать резюме раз в 4 часа. Hunter CLI"),
-    ("", "спрашивает точное время следующего разрешённого поднятия,"),
-    ("", "добавляет случайную задержку (45–240 с) и поднимает резюме сам."),
-    ("", ""),
-    ("Горячие клавиши", ""),
-    ("Q", "выйти (автопилот остановится)"),
-    ("R", "перечитать список резюме прямо сейчас"),
-    ("B", "поднять всё, что разрешено поднять сию секунду"),
-    ("P", "пауза — резюме перестают подниматься, но окно живёт"),
-    ("A", "заново пройти вход в аккаунт"),
-    ("1…9", "включить или выключить резюме под номером в таблице"),
-    ("L", "открыть файл журнала рядом с программой"),
-    ("H", "закрыть эту справку"),
-    ("", ""),
-    ("Фоновая работа", ""),
-    ("", "Окно можно свернуть — автопилот продолжит работать."),
-    ("", "Закрывать окно нельзя: программа остановится."),
+#: Разделы справки: (заголовок, строки, порядок вытеснения).
+#: Порядок в списке = порядок на экране. Число — очерёдность, в которой раздел
+#: пытаются добавить, если в окне мало места: 0 показываем всегда, дальше по
+#: возрастанию. Уведомление о лицензии идёт раньше пояснений: этого требует
+#: AGPL от интерактивных программ, а «как это работает» есть и в README.
+HELP_SECTIONS: list[tuple[str, list[tuple[str, str]], int]] = [
+    (
+        "Как это работает",
+        [
+            ("", "Площадка разрешает поднимать резюме раз в 4 часа. Программа"),
+            ("", "узнаёт точное время, добавляет случайную задержку 45–240 с"),
+            ("", "и поднимает сама. Окно свернёте — работает, закроете — нет."),
+        ],
+        2,
+    ),
+    (
+        "Горячие клавиши",
+        [
+            ("Q", "выйти (автопилот остановится)"),
+            ("R", "перечитать список резюме прямо сейчас"),
+            ("B", "поднять всё, что разрешено поднять сию секунду"),
+            ("P", "пауза — резюме перестают подниматься, но окно живёт"),
+            ("A", "заново пройти вход в аккаунт"),
+            ("1…9", "включить или выключить резюме под номером в таблице"),
+            ("L", "открыть файл журнала рядом с программой"),
+            ("H", "закрыть эту справку"),
+        ],
+        0,
+    ),
+    (
+        "Лицензия",
+        [
+            ("", f"© 2026 Алексей Коняев. {APP_NAME} — свободная программа под"),
+            ("", "GNU AGPL v3, без каких-либо гарантий. Подробнее: --license"),
+        ],
+        1,
+    ),
 ]
 
 
@@ -321,11 +340,38 @@ class Dashboard:
             body = grid
         return _panel(body, "ЖУРНАЛ")
 
-    def _help_panel(self) -> RenderableType:
+    @staticmethod
+    def _help_rows(height: int) -> list[tuple[str, str]]:
+        """Собрать справку под доступную высоту, начиная с обязательного."""
+        room = max(3, height - 2)  # минус рамка панели
+
+        def cost(indexes: list[int]) -> int:
+            # Заголовок + строки на каждый раздел, плюс пустая строка между.
+            total = sum(1 + len(HELP_SECTIONS[i][1]) for i in indexes)
+            return total + max(0, len(indexes) - 1)
+
+        # Добавляем разделы в порядке важности, пока помещаются.
+        chosen: list[int] = []
+        by_priority = sorted(range(len(HELP_SECTIONS)), key=lambda i: HELP_SECTIONS[i][2])
+        for index in by_priority:
+            candidate = sorted(chosen + [index])
+            if not chosen or cost(candidate) <= room:
+                chosen = candidate
+
+        rows: list[tuple[str, str]] = []
+        for position, index in enumerate(sorted(chosen)):
+            if position:
+                rows.append(("", ""))
+            title, body, _ = HELP_SECTIONS[index]
+            rows.append((title, ""))
+            rows.extend(body)
+        return rows[:room]
+
+    def _help_panel(self, height: int) -> RenderableType:
         grid = Table.grid(padding=(0, 2))
-        grid.add_column(style=f"bold {ACCENT_SOFT}", width=6, justify="right")
-        grid.add_column(overflow="fold")
-        for key, text in HELP_TEXT:
+        grid.add_column(style=f"bold {ACCENT_SOFT}", width=6, justify="right", no_wrap=True)
+        grid.add_column(overflow="ellipsis", no_wrap=True)
+        for key, text in self._help_rows(height):
             if key and not text:
                 grid.add_row("", Text(key, style=f"bold {ACCENT}"))
             else:
@@ -368,7 +414,7 @@ class Dashboard:
         root["header"].update(self._header(snap, width, tall_header))
 
         if self.show_help:
-            root["body"].update(self._help_panel())
+            root["body"].update(self._help_panel(height - header_size - log_size - 2))
         elif wide:
             side_width = 34 if width >= 108 else 30
             root["body"].split_row(

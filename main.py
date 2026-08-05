@@ -4,6 +4,7 @@
   HunterCLI.exe "hh-android://oauth/code?code=..."  — приём кода от браузера
   HunterCLI.exe --check                             — проверка окружения
   HunterCLI.exe --version                           — версия
+  HunterCLI.exe --license                           — лицензия и гарантии
 """
 
 from __future__ import annotations
@@ -48,6 +49,14 @@ def main() -> int:
         from huntercli import __version__
 
         print(f"Hunter CLI {__version__}")
+        return 0
+
+    if argument == "--license":
+        from huntercli import APP_NAME, LICENSE_NOTICE, __version__
+
+        print(f"{APP_NAME} {__version__}")
+        print()
+        print(LICENSE_NOTICE)
         return 0
 
     if argument in ("--check", "--selftest"):

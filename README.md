@@ -1,7 +1,7 @@
 # 🎯 Hunter CLI — автопилот поднятия резюме
 
 ![Python](https://img.shields.io/badge/python-3.12-blue)
-![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)
+![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)
 ![Platform](https://img.shields.io/badge/platform-Windows-lightgrey)
 ![Interface](https://img.shields.io/badge/UI-TUI-red)
 ![GitHub release](https://img.shields.io/github/v/release/akonyaev-ru/HunterCLI)
@@ -173,10 +173,25 @@ python tests\run_all.py --live
 
 Copyright (c) 2026 Алексей Коняев
 
-Hunter CLI распространяется под лицензией **MIT** (см. файл [`LICENSE`](LICENSE)).
-В отличие от [Umbra](https://github.com/akonyaev-ru/Umbra), здесь нет зависимостей
-с копилефтом: `requests` — Apache 2.0, `rich` и `pythonnet` — MIT,
-`pywebview` — BSD. Поэтому выбрана самая простая разрешительная лицензия.
+Hunter CLI распространяется под лицензией **GNU AGPL v3** (см. файл
+[`LICENSE`](LICENSE)) — той же, что и [Umbra](https://github.com/akonyaev-ru/Umbra).
+
+Что это значит на практике:
+
+* **Пользоваться программой** может кто угодно и для чего угодно, в том числе на работе. Никаких ограничений.
+* **Изменять и распространять** её тоже можно — но производная работа обязана остаться под AGPL v3 с открытыми исходниками. Взять этот код, закрыть его и продавать как свой продукт нельзя.
+* **Сетевой сервис** на её основе приравнивается к распространению (это и есть отличие AGPL от обычной GPL): если кто-то поднимет из этого кода веб-сервис, он обязан открыть исходники всем его пользователям.
+
+> [!NOTE]
+> Лицензия выбрана осознанно, а не по необходимости: все зависимости
+> разрешительные (`requests` — Apache 2.0, `rich` и `pythonnet` — MIT,
+> `pywebview` — BSD, `PyInstaller` — GPLv2+ с исключением для несвободных
+> программ), и формально подошла бы любая. AGPL взята ради того, чтобы
+> производные оставались открытыми.
+
+**Коммерческое использование на других условиях.** Все права на код принадлежат
+автору, поэтому AGPL — не единственный вариант: если вам нужно использовать
+Hunter CLI в закрытом продукте, напишите — обсудим отдельную лицензию.
 
 ## 💬 Обратная связь
 

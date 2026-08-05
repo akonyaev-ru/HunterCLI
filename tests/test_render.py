@@ -117,7 +117,21 @@ def run() -> bool:
     report.section("Особые состояния")
     help_text = _render(lambda b: setattr(b, "show_help", True), snap, log, 120, 40)
     report.check("справка открывается", "Горячие клавиши" in help_text)
+    report.check("в справке есть уведомление о лицензии", "AGPL" in help_text)
     chunks.append(f"\n=== СПРАВКА ===\n{help_text}")
+
+    report.section("Справка помещается в окно")
+    # Разделов больше, чем строк в маленьком окне: обязательный (клавиши)
+    # обязан остаться, остальное отбрасывается, но обрезки быть не должно.
+    for width, height in SIZES:
+        text = _render(lambda b: setattr(b, "show_help", True), snap, log, width, height)
+        lines = [line.rstrip() for line in text.splitlines()]
+        report.check(f"{width}x{height}: справка не вылезает", len(lines) <= height
+                     and not [ln for ln in lines if len(ln) > width])
+        report.check(f"{width}x{height}: клавиши на месте", "Горячие клавиши" in text)
+        # Рамка панели должна замкнуться — если раздел не влез, его выбрасывают
+        # целиком, а не режут по середине.
+        report.check(f"{width}x{height}: панель справки замкнута", "└" in text)
 
     empty = _render(lambda b: None, Snapshot(phase=Phase.STARTING, started_at=time.time()),
                     LogBus(to_file=False), 120, 40)
