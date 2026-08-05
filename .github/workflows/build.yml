@@ -6,6 +6,13 @@ name: Build Hunter CLI
 permissions:
   contents: read
 
+# Раннеры GitHub англоязычные: без этого Python берёт кодировку из локали
+# (cp1252) и любой русский print — в тестах, в set_version.py — падает с
+# UnicodeEncodeError. Проверки при этом исправны, красной становится сборка.
+env:
+  PYTHONUTF8: '1'
+  PYTHONIOENCODING: 'utf-8'
+
 on:
   push:
     branches:
@@ -52,13 +59,24 @@ jobs:
         run: python -m PyInstaller --noconfirm --clean HunterCLI.spec
 
       - name: Smoke-check the executable
-        # Проверяем, что собранный .exe вообще запускается и что внутрь него
-        # попали pywebview с WebView2: именно на упаковке этих зависимостей
-        # сборка ломается чаще всего. Связь с сетью на раннере не гарантируем,
-        # поэтому смотрим только на факт запуска и наличие окна входа.
+        # Проверяем, что собранный .exe запускается и что внутрь него попали
+        # pywebview с WebView2: именно на упаковке этих зависимостей сборка
+        # ломается чаще всего.
+        #
+        # Ищем ASCII-подстроку, а не русскую фразу: вывод .exe в UTF-8, а чем
+        # его прочитает оболочка раннера — не наше дело, кириллица может
+        # приехать искажённой. Код возврата --check тоже не критерий: он
+        # ненулевой и когда на раннере просто нет сети.
         run: |
+          $ErrorActionPreference = 'Continue'
           dist\HunterCLI.exe --version
-          dist\HunterCLI.exe --check | Select-String -Pattern "встроенный браузер"
+          $report = (dist\HunterCLI.exe --check 2>&1 | Out-String)
+          Write-Host $report
+          if ($report -notmatch 'pywebview') {
+            Write-Host 'FAILED: pywebview did not make it into the executable'
+            exit 1
+          }
+          Write-Host 'OK: executable starts and pywebview is bundled'
 
       - name: Archive build
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

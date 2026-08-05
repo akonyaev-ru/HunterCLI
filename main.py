@@ -12,15 +12,6 @@ from __future__ import annotations
 import sys
 
 
-def _fix_stdio() -> None:
-    """Русский текст и рамки должны печататься в любой консоли Windows."""
-    for stream in (sys.stdout, sys.stderr):
-        try:
-            stream.reconfigure(encoding="utf-8", errors="replace")
-        except Exception:
-            pass
-
-
 def _handle_protocol(url: str) -> int:
     """Нас запустила Windows по ссылке hh-android:// — передать код основному окну."""
     from huntercli import auth
@@ -39,7 +30,9 @@ def _handle_protocol(url: str) -> int:
 
 
 def main() -> int:
-    _fix_stdio()
+    from huntercli import force_utf8_output
+
+    force_utf8_output()
     argument = sys.argv[1] if len(sys.argv) > 1 else ""
 
     if argument.startswith("hh-android://"):

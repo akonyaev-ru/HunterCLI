@@ -17,6 +17,11 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
+from huntercli import force_utf8_output  # noqa: E402  (нужен ROOT в sys.path)
+
+# Отчёты тестов на русском, а вывод в CI и в файл идёт не в UTF-8.
+force_utf8_output()
+
 _SANDBOX: str | None = None
 
 

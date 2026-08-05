@@ -16,6 +16,12 @@ import re
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+
+from huntercli import force_utf8_output  # noqa: E402  (нужен ROOT в sys.path)
+
+force_utf8_output()
+
 TARGET = os.path.join(ROOT, "huntercli", "__init__.py")
 
 VERSION_RE = re.compile(r'^__version__\s*=\s*"[^"]*"', re.M)

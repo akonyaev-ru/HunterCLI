@@ -8,11 +8,30 @@ Copyright (c) 2026 Алексей Коняев.
 Полный текст — в файле LICENSE.
 """
 
+import sys
+
 __version__ = "2.0.0"
 
 APP_NAME = "Hunter CLI"
 
 REPO_URL = "https://github.com/akonyaev-ru/HunterCLI"
+
+
+def force_utf8_output() -> None:
+    """Заставить stdout/stderr печатать в UTF-8.
+
+    Весь текст программы — русский, а кодировку вывода Python берёт из локали.
+    На англоязычной Windows это cp1252, и первый же print с кириллицей падает
+    с UnicodeEncodeError. В консоли это обычно незаметно, зато проявляется
+    везде, где вывод перенаправлен: в файл, в конвейер, в CI.
+
+    Вызывать в каждой точке входа — в приложении, в тестах, в скриптах.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
 
 #: Уведомление, которого требует AGPL от интерактивных программ: авторство,
 #: отсутствие гарантий, право передавать дальше и где взять текст лицензии.

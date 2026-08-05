@@ -17,6 +17,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 import huntercli.paths as paths
+from huntercli import force_utf8_output
+
+force_utf8_output()
 
 #: Конфиг и журнал при генерации картинки трогать нельзя.
 paths.base_dir = lambda: os.path.join(ROOT, "tools")
