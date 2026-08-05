@@ -11,7 +11,7 @@ Copyright (c) 2026 Алексей Коняев.
 import sys
 
 #: Нумерация как у Umbra: год и порядковый выпуск внутри года.
-__version__ = "2026.1"
+__version__ = "2026.2"
 
 APP_NAME = "Hunter CLI"
 
