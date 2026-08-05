@@ -11,7 +11,7 @@ from harness import Report, sandbox
 
 sandbox()
 
-from huntercli import APP_NAME
+from huntercli import APP_NAME, AUTHOR, __version__
 from huntercli.ui import banner, theme
 
 
@@ -51,21 +51,23 @@ def run() -> bool:
     report.check("на границе короткого не рвётся",
                  banner._art_for(banner.MIN_ART_WIDTH) is banner.MID)
 
-    report.section("Под логотипом — только имя владельца")
+    report.section("Подпись под логотипом: версия, автор, владелец")
     wide = banner.subtitle("Иван И.", 120).plain
-    report.check("названия нет — оно уже нарисовано выше", APP_NAME not in wide, f"-> {wide!r}")
-    report.check("версии нет", "v2" not in wide and "2.0.0" not in wide)
+    report.check("версия на месте", f"v{__version__}" in wide, f"-> {wide!r}")
+    report.check("автор на месте", AUTHOR in wide)
+    report.check("имя владельца на месте", "Иван И." in wide)
+    report.check("названия нет — оно уже нарисовано выше", APP_NAME not in wide)
     report.check("описания нет", "автопилот" not in wide and "autopilot" not in wide)
-    report.check("имя владельца на месте", wide.strip() == "Иван И.", f"-> {wide!r}")
 
     empty = banner.subtitle("", 120).plain
-    report.check("до первой синхронизации подпись пустая", not empty.strip(), f"-> {empty!r}")
+    report.check("до первой синхронизации остаются версия и автор",
+                 f"v{__version__}" in empty and AUTHOR in empty and "·" in empty,
+                 f"-> {empty!r}")
 
     narrow = banner.subtitle("Иван И.", 40, with_name=True).plain
     report.check("без логотипа название возвращается", APP_NAME in narrow, f"-> {narrow!r}")
-    lonely = banner.subtitle("", 40, with_name=True).plain
-    report.check("без логотипа и без имени — только название",
-                 lonely.strip() == APP_NAME, f"-> {lonely!r}")
+    report.check("в узком окне автор отбрасывается", AUTHOR not in narrow)
+    report.check("но версия остаётся всегда", f"v{__version__}" in narrow)
 
     report.section("Палитра красная")
     for name in ("ACCENT", "ACCENT_SOFT", "FRAME", "FRAME_HOT", "ERR", "MUTED"):

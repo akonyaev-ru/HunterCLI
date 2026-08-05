@@ -15,7 +15,10 @@ __version__ = "2026.1"
 
 APP_NAME = "Hunter CLI"
 
-REPO_URL = "https://github.com/akonyaev-ru/HunterCLI"
+#: Логин автора на GitHub — показывается в подписи под логотипом.
+AUTHOR = "akonyaev-ru"
+
+REPO_URL = f"https://github.com/{AUTHOR}/HunterCLI"
 
 
 def force_utf8_output() -> None:

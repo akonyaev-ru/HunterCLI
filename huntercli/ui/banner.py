@@ -6,7 +6,7 @@ from rich.align import Align
 from rich.console import Group
 from rich.text import Text
 
-from .. import APP_NAME
+from .. import APP_NAME, AUTHOR, __version__
 from .theme import ACCENT, ACCENT_SOFT, FLAME, MUTED
 
 #: Полный логотип: HUNTER CLI.
@@ -52,18 +52,26 @@ def _art_for(width: int) -> list[str] | None:
 
 
 def subtitle(right: str = "", width: int = 120, *, with_name: bool = False) -> Text:
-    """Подпись под логотипом: только имя владельца аккаунта.
+    """Подпись под логотипом: версия, автор и владелец аккаунта.
 
-    Название дублируется лишь когда логотип не поместился — иначе оно уже
-    нарисовано большими буквами прямо над этой строкой.
+    Чем уже окно, тем меньше частей помещается — отбрасываем с конца.
+    Название приложения добавляется, только когда логотип не поместился:
+    иначе оно уже нарисовано большими буквами прямо над этой строкой.
     """
-    text = Text(no_wrap=True, overflow="ellipsis")
+    chunks: list[tuple[str, str]] = []
     if with_name:
-        text.append(APP_NAME, style=f"bold {ACCENT}")
-        if right and width >= 40:
-            text.append("   ·   ", style=MUTED)
+        chunks.append((APP_NAME, f"bold {ACCENT}"))
+    chunks.append((f"v{__version__}", MUTED))
+    if width >= 64:
+        chunks.append((AUTHOR, MUTED))
     if right and width >= 40:
-        text.append(right, style=ACCENT_SOFT)
+        chunks.append((right, ACCENT_SOFT))
+
+    text = Text(no_wrap=True, overflow="ellipsis")
+    for index, (value, style) in enumerate(chunks):
+        if index:
+            text.append("   ·   ", style=MUTED)
+        text.append(value, style=style)
     return text
 
 
