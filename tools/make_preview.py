@@ -52,8 +52,8 @@ from huntercli.ui.theme import THEME
 #: сжатую шапку — для картинки в README нужен полный вид.
 COLUMNS, ROWS = 112, 32
 
-#: Поля вокруг окна и скругление — на глаз, как у скриншота Umbra.
-MARGIN_X, MARGIN_TOP, MARGIN_BOTTOM = 96, 80, 112
+#: Поля вокруг окна: окно должно «лежать» на фоне, а не упираться в края.
+MARGIN_X, MARGIN_TOP, MARGIN_BOTTOM = 210, 160, 190
 CORNER = 12
 
 OUTPUT_PNG = os.path.join(ROOT, "docs", "preview.png")
@@ -195,18 +195,13 @@ def compose(terminal: str, inner_w: float, inner_h: float) -> str:
     return f"""<svg xmlns="http://www.w3.org/2000/svg" width="{canvas_w:.0f}" \
 height="{canvas_h:.0f}" viewBox="0 0 {canvas_w:.0f} {canvas_h:.0f}">
   <defs>
-    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#fdf6f4"/>
-      <stop offset="45%" stop-color="#fbe6e0"/>
-      <stop offset="100%" stop-color="#f3c9c0"/>
-    </linearGradient>
-    <linearGradient id="sheen" x1="0%" y1="100%" x2="100%" y2="0%">
-      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.55"/>
-      <stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#f4f4f5"/>
+      <stop offset="100%" stop-color="#e4e4e7"/>
     </linearGradient>
     <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
-      <feDropShadow dx="0" dy="26" stdDeviation="30" flood-color="#7a1a12"
-                    flood-opacity="0.28"/>
+      <feDropShadow dx="0" dy="24" stdDeviation="28" flood-color="#000000"
+                    flood-opacity="0.22"/>
     </filter>
     <clipPath id="window">
       <rect x="{win_x}" y="{win_y}" width="{win_w:.0f}" height="{win_h:.0f}" rx="{CORNER}"/>
@@ -214,9 +209,6 @@ height="{canvas_h:.0f}" viewBox="0 0 {canvas_w:.0f} {canvas_h:.0f}">
   </defs>
 
   <rect width="100%" height="100%" fill="url(#bg)"/>
-  <path d="M0 {canvas_h * 0.78:.0f} Q {canvas_w * 0.3:.0f} {canvas_h * 0.62:.0f} \
-{canvas_w * 0.58:.0f} {canvas_h * 0.74:.0f} T {canvas_w:.0f} {canvas_h * 0.66:.0f} \
-L {canvas_w:.0f} {canvas_h:.0f} L 0 {canvas_h:.0f} Z" fill="url(#sheen)"/>
 
   <rect x="{win_x}" y="{win_y}" width="{win_w:.0f}" height="{win_h:.0f}" rx="{CORNER}"
         fill="#0f0d0d" filter="url(#shadow)"/>
