@@ -92,7 +92,7 @@ def run() -> bool:
     from huntercli.ui.banner import subtitle
     from huntercli.ui.dashboard import HELP_SECTIONS, HOTKEYS
 
-    line = subtitle("Иван И.", 120, with_name=True).plain
+    line = subtitle(120, with_name=True).plain
     report.check("подпись под логотипом чистая", "hh" not in line.lower(), f"-> {line!r}")
     report.check("названия состояний чистые",
                  not any("hh" in v.lower() for v in PHASE_LABEL.values()))

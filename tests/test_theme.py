@@ -11,7 +11,7 @@ from harness import Report, sandbox
 
 sandbox()
 
-from huntercli import APP_NAME, AUTHOR, __version__
+from huntercli import APP_NAME, APP_TAGLINE, AUTHOR, __version__
 from huntercli.ui import banner, theme
 
 
@@ -51,23 +51,29 @@ def run() -> bool:
     report.check("на границе короткого не рвётся",
                  banner._art_for(banner.MIN_ART_WIDTH) is banner.MID)
 
-    report.section("Подпись под логотипом: версия, автор, владелец")
-    wide = banner.subtitle("Иван И.", 120).plain
-    report.check("версия на месте", f"v{__version__}" in wide, f"-> {wide!r}")
+    report.section("Подпись под логотипом: описание, версия, автор")
+    wide = banner.subtitle(120).plain
+    report.check("описание на месте", APP_TAGLINE in wide, f"-> {wide!r}")
+    report.check("версия на месте", f"версия {__version__}" in wide)
     report.check("автор на месте", AUTHOR in wide)
-    report.check("имя владельца на месте", "Иван И." in wide)
     report.check("названия нет — оно уже нарисовано выше", APP_NAME not in wide)
-    report.check("описания нет", "автопилот" not in wide and "autopilot" not in wide)
+    report.check("имени владельца аккаунта нет", "Иван" not in wide)
+    report.check("подпись не зависит от аккаунта", banner.subtitle(120).plain == wide)
 
-    empty = banner.subtitle("", 120).plain
-    report.check("до первой синхронизации остаются версия и автор",
-                 f"v{__version__}" in empty and AUTHOR in empty and "·" in empty,
-                 f"-> {empty!r}")
+    narrow = banner.subtitle(60).plain
+    report.check("в узком окне описание отбрасывается", APP_TAGLINE not in narrow,
+                 f"-> {narrow!r}")
+    report.check("версия и автор остаются",
+                 f"версия {__version__}" in narrow and AUTHOR in narrow)
 
-    narrow = banner.subtitle("Иван И.", 40, with_name=True).plain
-    report.check("без логотипа название возвращается", APP_NAME in narrow, f"-> {narrow!r}")
-    report.check("в узком окне автор отбрасывается", AUTHOR not in narrow)
-    report.check("но версия остаётся всегда", f"v{__version__}" in narrow)
+    lonely = banner.subtitle(40, with_name=True).plain
+    report.check("без логотипа название возвращается", APP_NAME in lonely, f"-> {lonely!r}")
+
+    # Значка GitHub рядом с логином быть не должно: в шрифтах терминала его
+    # нет, и вместо него нарисовался бы пустой квадрат.
+    report.check("в подписи только символы, которые есть в шрифтах терминала",
+                 all(ord(ch) < 0x2500 or ch in "·—" for ch in wide),
+                 f"-> {sorted({ch for ch in wide if ord(ch) >= 0x2500})}")
 
     report.section("Палитра красная")
     for name in ("ACCENT", "ACCENT_SOFT", "FRAME", "FRAME_HOT", "ERR", "MUTED"):

@@ -154,9 +154,7 @@ class Dashboard:
     # ------------------------------------------------------------- блоки
 
     def _header(self, snap: Snapshot, width: int, tall: bool) -> RenderableType:
-        right = snap.account or ""
-        head = banner.render(width, right, compact=not tall)
-        return Group(head, _rule(width))
+        return Group(banner.render(width, compact=not tall), _rule(width))
 
     def _resume_table(self, snap: Snapshot, width: int) -> RenderableType:
         table = Table(
