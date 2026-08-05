@@ -197,11 +197,14 @@ def silk(canvas_w: float, canvas_h: float) -> str:
         )
 
     #: (кривая, цвет, толщина в долях высоты, прозрачность)
+    #: Полосы держатся подальше от кромок окна. Иначе окно перекрывает край
+    #: светлой полосы, обрез повторяет её скруглённый угол — и на фоне
+    #: проступает контур «второго окна».
     bands = [
-        (sweep(0.42, 0.20, 0.34, 0.06), "#ffffff", 0.16, 0.85),
-        (sweep(0.24, 0.06, 0.16, -0.06), "#bcbcc8", 0.13, 0.45),
-        (sweep(1.00, 0.74, 0.94, 0.58), "#ffffff", 0.13, 0.90),
-        (sweep(1.16, 0.94, 1.12, 0.78), "#b6b6c4", 0.18, 0.55),
+        (sweep(0.34, 0.10, 0.24, -0.06), "#ffffff", 0.20, 0.85),
+        (sweep(0.12, -0.08, 0.04, -0.20), "#bcbcc8", 0.16, 0.40),
+        (sweep(1.16, 0.92, 1.10, 0.72), "#ffffff", 0.17, 0.85),
+        (sweep(1.34, 1.12, 1.30, 0.94), "#b6b6c4", 0.20, 0.50),
     ]
     return "\n".join(
         f'    <path d="{path}" stroke="{color}" stroke-width="{canvas_h * thick:.0f}" '
@@ -247,12 +250,15 @@ height="{canvas_h:.0f}" viewBox="0 0 {canvas_w:.0f} {canvas_h:.0f}">
     </linearGradient>
     <!-- Размытие делает из трёх фигур единое перетекание. Без него это
          читалось бы как аппликация из кусков бумаги. -->
-    <filter id="silk" x="-30%" y="-30%" width="160%" height="160%">
-      <feGaussianBlur stdDeviation="46"/>
+    <filter id="silk" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="78"/>
     </filter>
+    <!-- Смещение должно быть заметно меньше размытия. Иначе тень повторяет
+         скруглённый силуэт окна со сдвигом, и он читается как контур
+         «второго окна» под настоящим. -->
     <filter id="shadow" x="-25%" y="-25%" width="150%" height="160%">
-      <feDropShadow dx="0" dy="28" stdDeviation="34" flood-color="#1a1214"
-                    flood-opacity="0.30"/>
+      <feDropShadow dx="0" dy="10" stdDeviation="44" flood-color="#1a1214"
+                    flood-opacity="0.32"/>
     </filter>
     <clipPath id="window">
       <rect x="{win_x}" y="{win_y}" width="{win_w:.0f}" height="{win_h:.0f}" rx="{CORNER}"/>
