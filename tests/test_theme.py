@@ -12,6 +12,7 @@ from harness import Report, sandbox
 sandbox()
 
 from huntercli import APP_NAME, APP_TAGLINE, AUTHOR, __version__
+from huntercli import logo
 from huntercli.ui import banner, theme
 
 
@@ -51,29 +52,45 @@ def run() -> bool:
     report.check("на границе короткого не рвётся",
                  banner._art_for(banner.MIN_ART_WIDTH) is banner.MID)
 
-    report.section("Подпись под логотипом: описание, версия, автор")
+    report.section("Подпись под логотипом: описание и версия")
     wide = banner.subtitle(120).plain
     report.check("описание на месте", APP_TAGLINE in wide, f"-> {wide!r}")
     report.check("версия на месте", f"версия {__version__}" in wide)
-    report.check("автор на месте", AUTHOR in wide)
+    report.check("автора в подписи нет", AUTHOR not in wide)
     report.check("названия нет — оно уже нарисовано выше", APP_NAME not in wide)
-    report.check("имени владельца аккаунта нет", "Иван" not in wide)
-    report.check("подпись не зависит от аккаунта", banner.subtitle(120).plain == wide)
-
-    narrow = banner.subtitle(60).plain
-    report.check("в узком окне описание отбрасывается", APP_TAGLINE not in narrow,
-                 f"-> {narrow!r}")
-    report.check("версия и автор остаются",
-                 f"версия {__version__}" in narrow and AUTHOR in narrow)
+    report.check("разделитель — тире, не точка", "—" in wide and "·" not in wide)
+    report.check("вокруг разделителя по одному пробелу", " — " in wide and "  —" not in wide)
 
     lonely = banner.subtitle(40, with_name=True).plain
     report.check("без логотипа название возвращается", APP_NAME in lonely, f"-> {lonely!r}")
 
-    # Значка GitHub рядом с логином быть не должно: в шрифтах терминала его
-    # нет, и вместо него нарисовался бы пустой квадрат.
     report.check("в подписи только символы, которые есть в шрифтах терминала",
-                 all(ord(ch) < 0x2500 or ch in "·—" for ch in wide),
+                 all(ord(ch) < 0x2500 or ch == "—" for ch in wide),
                  f"-> {sorted({ch for ch in wide if ord(ch) >= 0x2500})}")
+
+    report.section("Значок: размер и моргание")
+    report.check("значок высотой с надпись",
+                 len(banner.mark_lines()) == len(banner.BIG),
+                 f"-> {len(banner.mark_lines())} и {len(banner.BIG)}")
+    report.check("матрица моргания того же размера",
+                 len(logo.BLINK) == len(logo.LOGO)
+                 and all(len(r) == logo.WIDTH for r in logo.BLINK))
+    report.check("закрытый глаз отличается от открытого", logo.BLINK != logo.LOGO)
+    report.check("при моргании закрашенных клеток меньше",
+                 sum(r.count("#") for r in logo.BLINK)
+                 < sum(r.count("#") for r in logo.LOGO))
+
+    open_frames = [t for t in range(banner.BLINK_PERIOD) if not banner.blinking(t)]
+    report.check("моргание редкое, глаз почти всегда открыт",
+                 len(open_frames) / banner.BLINK_PERIOD > 0.95,
+                 f"-> открыт {len(open_frames)} кадров из {banner.BLINK_PERIOD}")
+    report.check("период около десяти секунд при восьми кадрах в секунду",
+                 9 <= banner.BLINK_PERIOD / 8 <= 11,
+                 f"-> {banner.BLINK_PERIOD / 8:.1f} с")
+    report.check("кадры моргания идут подряд",
+                 all(banner.blinking(t) for t in range(banner.BLINK_FRAMES)))
+    report.check("значок меняется в кадре моргания",
+                 banner.mark_lines(0)[2].plain != banner.mark_lines(20)[2].plain)
 
     report.section("Палитра красная")
     for name in ("ACCENT", "ACCENT_SOFT", "FRAME", "FRAME_HOT", "ERR", "MUTED"):

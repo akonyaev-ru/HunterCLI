@@ -35,8 +35,17 @@ SOURCE = os.path.join(ROOT, "logo.png")
 ICON = os.path.join(ROOT, "icon.ico")
 MATRIX_MODULE = os.path.join(ROOT, "huntercli", "logo.py")
 
-#: Логическая сетка пиксель-арта в исходном файле.
+#: Логическая сетка пиксель-арта в исходном файле. Для иконки берём её как
+#: есть: чем больше клеток, тем чище край при уменьшении.
 COLS, ROWS = 22, 14
+
+#: Сетка для консоли меньше: строки рисуются полублоками, поэтому 12 строк
+#: матрицы дают 6 строк экрана — ровно высота надписи HUNTER CLI.
+CONSOLE_COLS, CONSOLE_ROWS = 19, 12
+
+#: Строки матрицы, занятые самим глазом. Ниже идут мелкие украшения, которые
+#: при моргании остаются на месте.
+EYE_ROWS = 10
 
 #: Мастер-картинка: 768 делится нацело на 16, 24, 32, 48, 64, 96, 128 и 256,
 #: поэтому для них уменьшение идёт усреднением по площади, без ряби.
@@ -54,8 +63,8 @@ def _hex(value: str) -> tuple[int, int, int]:
     return int(value[0:2], 16), int(value[2:4], 16), int(value[4:6], 16)
 
 
-def extract() -> list[str]:
-    """Прочитать logo.png и вернуть строки из '#' и '.'."""
+def extract(cols: int, rows: int) -> list[str]:
+    """Прочитать logo.png и вернуть строки из '#' и '.' в заданной сетке."""
     image = Image.open(SOURCE).convert("RGBA")
     pixels = image.load()
     width, height = image.size
@@ -65,45 +74,75 @@ def extract() -> list[str]:
         return alpha > 128 and (red + green + blue) / 3 < 128
 
     columns = [x for x in range(width) if any(ink(x, y) for y in range(height))]
-    rows = [y for y in range(height) if any(ink(x, y) for x in range(width))]
-    x0, x1, y0, y1 = min(columns), max(columns), min(rows), max(rows)
-    cell_w = (x1 - x0 + 1) / COLS
-    cell_h = (y1 - y0 + 1) / ROWS
+    inked = [y for y in range(height) if any(ink(x, y) for x in range(width))]
+    x0, x1, y0, y1 = min(columns), max(columns), min(inked), max(inked)
+    cell_w = (x1 - x0 + 1) / cols
+    cell_h = (y1 - y0 + 1) / rows
 
     matrix: list[str] = []
-    for row in range(ROWS):
+    for row in range(rows):
         line = []
-        for col in range(COLS):
-            # Голосуем по центру клетки: края в исходнике слегка неровные.
-            left, right = x0 + cell_w * (col + 0.3), x0 + cell_w * (col + 0.7)
-            top, bottom = y0 + cell_h * (row + 0.3), y0 + cell_h * (row + 0.7)
+        for col in range(cols):
+            # Считаем долю закрашенного по всей клетке: при пересъёмке в
+            # другую сетку выборка по центру теряла бы тонкие детали.
+            left, right = x0 + cell_w * col, x0 + cell_w * (col + 1)
+            top, bottom = y0 + cell_h * row, y0 + cell_h * (row + 1)
             filled = total = 0
             for y in range(int(top), max(int(bottom), int(top) + 1)):
                 for x in range(int(left), max(int(right), int(left) + 1)):
                     total += 1
                     filled += ink(x, y)
-            line.append("#" if filled * 2 > total else ".")
+            line.append("#" if total and filled * 2 >= total else ".")
         matrix.append("".join(line))
     return matrix
 
 
-def write_matrix(matrix: list[str]) -> None:
-    lines = "\n".join(f'    "{row}",' for row in matrix)
-    MATRIX_MODULE_TEXT = f'''"""Логотип в виде матрицы. Файл создаётся tools/make_icon.py — не править.
+def blink_frame(matrix: list[str]) -> list[str]:
+    """Кадр моргания: глаз схлопывается в веко, украшения остаются.
+
+    По каждому столбцу берём середину закрашенного участка и оставляем там
+    две клетки. Получается изогнутая линия закрытого века, повторяющая форму
+    глаза, а не просто прямая черта.
+    """
+    cols = len(matrix[0])
+    eye, tail = matrix[:EYE_ROWS], matrix[EYE_ROWS:]
+    grid = [["."] * cols for _ in range(EYE_ROWS)]
+    for col in range(cols):
+        filled = [row for row in range(EYE_ROWS) if eye[row][col] == "#"]
+        if not filled:
+            continue
+        middle = (min(filled) + max(filled)) // 2
+        grid[middle][col] = "#"
+        if middle + 1 < EYE_ROWS:
+            grid[middle + 1][col] = "#"
+    return ["".join(row) for row in grid] + list(tail)
+
+
+def write_matrix(open_eye: list[str], closed_eye: list[str]) -> None:
+    def block(rows: list[str]) -> str:
+        return "\n".join(f'    "{row}",' for row in rows)
+
+    text = f'''"""Логотип в виде матрицы. Файл создаётся tools/make_icon.py — не править.
 
 Каждый символ — логический пиксель: «#» закрашен, «.» пуст. В консоли строки
-рисуются полублоками, поэтому две строки матрицы занимают одну строку экрана
-и пиксели получаются квадратными.
+рисуются полублоками, поэтому две строки матрицы занимают одну строку экрана:
+пиксели получаются квадратными, а высота совпадает с надписью HUNTER CLI.
+
+BLINK — тот же глаз с закрытым веком, показывается на доли секунды.
 """
 
-WIDTH = {COLS}
-HEIGHT = {ROWS}
+WIDTH = {CONSOLE_COLS}
+HEIGHT = {CONSOLE_ROWS}
 
 LOGO = (
-{lines}
+{block(open_eye)}
+)
+
+BLINK = (
+{block(closed_eye)}
 )
 '''
-    io.open(MATRIX_MODULE, "w", encoding="utf-8", newline="\n").write(MATRIX_MODULE_TEXT)
+    io.open(MATRIX_MODULE, "w", encoding="utf-8", newline="\n").write(text)
 
 
 def render_master(matrix: list[str]) -> Image.Image:
@@ -129,11 +168,13 @@ def main() -> int:
         print(f"Не найден {SOURCE}", file=sys.stderr)
         return 1
 
-    matrix = extract()
-    write_matrix(matrix)
-    print(f"Матрица: {MATRIX_MODULE} ({COLS}x{ROWS})")
+    console = extract(CONSOLE_COLS, CONSOLE_ROWS)
+    write_matrix(console, blink_frame(console))
+    print(f"Матрица для консоли: {MATRIX_MODULE} "
+          f"({CONSOLE_COLS}x{CONSOLE_ROWS}, плюс кадр моргания)")
 
-    master = render_master(matrix)
+    detailed = extract(COLS, ROWS)
+    master = render_master(detailed)
     frames = []
     for size in ICON_SIZES:
         # Кратные размеры уменьшаем усреднением по площади: для пиксель-арта

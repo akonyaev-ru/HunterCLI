@@ -44,13 +44,25 @@ FULL_WIDTH = MARK_WIDTH + MARK_GAP + BIG_WIDTH
 MIN_ART_WIDTH = MID_WIDTH + 4
 
 
-def mark_lines() -> list[Text]:
+#: Раз в сколько кадров глаз моргает и сколько кадров держится закрытым.
+#: Дашборд обновляется примерно восемь раз в секунду, поэтому 82 кадра —
+#: это около десяти секунд, а три кадра — примерно треть секунды.
+BLINK_PERIOD = 82
+BLINK_FRAMES = 3
+
+
+def blinking(tick: int) -> bool:
+    return tick % BLINK_PERIOD < BLINK_FRAMES
+
+
+def mark_lines(tick: int = 0) -> list[Text]:
     """Значок из logo.png: пиксель-арт полублоками, в цветах надписи."""
+    matrix = logo.BLINK if blinking(tick) else logo.LOGO
     rows: list[Text] = []
     for index in range(MARK_HEIGHT):
-        top = logo.LOGO[index * 2]
+        top = matrix[index * 2]
         below = index * 2 + 1
-        bottom = logo.LOGO[below] if below < logo.HEIGHT else "." * logo.WIDTH
+        bottom = matrix[below] if below < logo.HEIGHT else "." * logo.WIDTH
         glyphs = "".join(
             {(True, True): "█", (True, False): "▀", (False, True): "▄"}.get(
                 (top[col] == "#", bottom[col] == "#"), " "
@@ -77,54 +89,77 @@ def _art_for(width: int) -> list[str] | None:
     return None
 
 
-def _with_mark(art: list[str]) -> list[Text]:
-    """Значок слева, надпись справа. Надпись опущена на строку — так их
-    оптические центры совпадают: значок на строку выше."""
-    mark = mark_lines()
+def _with_mark(art: list[str], tick: int) -> list[Text]:
+    """Значок слева, надпись справа. Высоты совпадают, поэтому строки идут
+    парами без смещения."""
+    mark = mark_lines(tick)
     words = _flame_lines(art)
     lines: list[Text] = []
-    for index in range(MARK_HEIGHT):
+    for index in range(max(MARK_HEIGHT, len(words))):
         row = Text(no_wrap=True)
-        row.append_text(mark[index])
-        row.append(" " * MARK_GAP)
-        word_index = index - (MARK_HEIGHT - len(words))
-        if 0 <= word_index < len(words):
-            row.append_text(words[word_index])
+        if index < len(mark):
+            row.append_text(mark[index])
         else:
-            row.append(" " * len(art[0]))
+            row.append(" " * MARK_WIDTH)
+        row.append(" " * MARK_GAP)
+        if index < len(words):
+            row.append_text(words[index])
         lines.append(row)
     return lines
 
 
-def art_lines(width: int) -> list[Text] | None:
+def _shows_mark(width: int, art: list[str] | None) -> bool:
+    return art is BIG and width >= FULL_WIDTH + 4
+
+
+def art_lines(width: int, tick: int = 0) -> list[Text] | None:
     """Готовые строки логотипа под ширину окна."""
     art = _art_for(width)
     if art is None:
         return None
-    if art is BIG and width >= FULL_WIDTH + 4:
-        return _with_mark(art)
+    if _shows_mark(width, art):
+        return _with_mark(art, tick)
     return _flame_lines(art)
 
 
-def subtitle(width: int = 120, *, with_name: bool = False) -> Text:
-    """Подпись под логотипом: что это, какая версия и чьё авторство.
+def _place_subtitle(width: int, art: list[str] | None, sub: Text) -> Text:
+    """Подпись центрируется под НАДПИСЬЮ, а не под всем блоком со значком.
 
-    Чем уже окно, тем меньше частей помещается — описание уходит первым.
+    Иначе она уезжает влево: значок тянет оптический центр на себя.
+    """
+    if not _shows_mark(width, art):
+        left = (width - sub.cell_len) / 2
+    else:
+        block_start = (width - FULL_WIDTH) / 2
+        word_center = block_start + MARK_WIDTH + MARK_GAP + len(art[0]) / 2
+        left = word_center - sub.cell_len / 2
+
+    padded = Text(" " * max(0, int(round(left))), no_wrap=True)
+    padded.append_text(sub)
+    return padded
+
+
+#: Разделитель между частями подписи.
+SEPARATOR = " — "
+
+
+def subtitle(width: int = 120, *, with_name: bool = False) -> Text:
+    """Подпись под логотипом: что это и какая версия.
+
     Название приложения добавляется, только когда логотип не поместился:
     иначе оно уже нарисовано большими буквами прямо над этой строкой.
     """
     chunks: list[tuple[str, str]] = []
     if with_name:
         chunks.append((APP_NAME, f"bold {ACCENT}"))
-    if width >= 76:
+    if width >= 52:
         chunks.append((APP_TAGLINE, MUTED))
     chunks.append((f"версия {__version__}", MUTED))
-    chunks.append((AUTHOR, ACCENT_SOFT))
 
     text = Text(no_wrap=True, overflow="ellipsis")
     for index, (value, style) in enumerate(chunks):
         if index:
-            text.append("   ·   ", style=MUTED)
+            text.append(SEPARATOR, style=MUTED)
         text.append(value, style=style)
     return text
 
@@ -137,25 +172,26 @@ def art_height(width: int, *, compact: bool = False) -> int:
     return len(lines) if lines else 0
 
 
-def render(width: int, *, compact: bool = False) -> Group:
+def render(width: int, *, compact: bool = False, tick: int = 0) -> Group:
     """Заголовок, подстраивающийся под ширину окна."""
     width = max(1, width)
-    lines = None if compact else art_lines(width)
+    art = None if compact else _art_for(width)
 
-    if lines is None:
+    if art is None:
         return Group(Align.center(subtitle(width, with_name=True), width=width))
 
+    lines = art_lines(width, tick)
     parts = [Align.center(line, width=width) for line in lines]
-    parts.append(Align.center(subtitle(width), width=width))
+    parts.append(_place_subtitle(width, art, subtitle(width)))
     return Group(*parts)
 
 
 def plain_header(width: int = 120) -> Group:
     """Заголовок для обычной (не полноэкранной) печати."""
-    lines = art_lines(width)
-    if lines is None:
+    art = _art_for(width)
+    if art is None:
         return Group(subtitle(width, with_name=True))
-    parts: list[object] = list(lines)
+    parts: list[object] = list(art_lines(width))
     parts.append(Text())
     parts.append(subtitle(width))
     return Group(*parts)

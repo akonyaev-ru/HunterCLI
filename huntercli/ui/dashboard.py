@@ -154,7 +154,9 @@ class Dashboard:
     # ------------------------------------------------------------- блоки
 
     def _header(self, snap: Snapshot, width: int, tall: bool) -> RenderableType:
-        return Group(banner.render(width, compact=not tall), _rule(width))
+        # tick нужен значку: раз в несколько секунд глаз моргает.
+        head = banner.render(width, compact=not tall, tick=self.tick)
+        return Group(head, _rule(width))
 
     def _resume_table(self, snap: Snapshot, width: int) -> RenderableType:
         table = Table(

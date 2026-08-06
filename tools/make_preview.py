@@ -43,6 +43,7 @@ from huntercli import APP_NAME
 from huntercli.engine import Phase, Snapshot
 from huntercli.hh import Resume
 from huntercli.logbus import LogBus
+from huntercli.ui import banner
 from huntercli.ui.dashboard import Dashboard
 from huntercli.ui.theme import THEME
 
@@ -154,7 +155,9 @@ def render_terminal() -> tuple[str, float, float]:
         color_system="truecolor", record=True,
     )
     board = Dashboard(console, build_log())
-    board.tick = 3
+    # Кадр заведомо вне моргания: на статичной картинке глаз должен быть открыт.
+    board.tick = 20
+    assert not banner.blinking(board.tick), "выбран кадр с закрытым глазом"
     console.print(board.render(build_snapshot()))
 
     svg = console.export_svg(
