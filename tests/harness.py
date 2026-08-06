@@ -41,6 +41,26 @@ def cleanup() -> None:
         shutil.rmtree(_SANDBOX, ignore_errors=True)
 
 
+def quiet_server(server_class):
+    """Заглушить трассировки о разорванных соединениях у тестового сервера.
+
+    Клиент закрывает keep-alive соединение, когда оно ему больше не нужно, и
+    socketserver печатает по этому поводу полную трассировку. Это не сбой
+    проверки, но в выводе выглядит именно как сбой.
+    """
+
+    class Quiet(server_class):
+        daemon_threads = True
+
+        def handle_error(self, request, client_address):
+            error = sys.exc_info()[1]
+            if isinstance(error, (ConnectionResetError, ConnectionAbortedError)):
+                return
+            super().handle_error(request, client_address)
+
+    return Quiet
+
+
 class Report:
     def __init__(self, title: str) -> None:
         self.title = title

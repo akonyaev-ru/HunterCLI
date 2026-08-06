@@ -11,6 +11,7 @@ from datetime import datetime
 from .config import Config
 from .hh import HHClient, HHError, NetworkError, Resume, TokenError
 from .logbus import LogBus
+from .power import SleepDetector, WakeTimer, keep_awake
 
 #: Минимальный интервал между обращениями к /resumes/mine, чтобы не долбить API.
 MIN_SYNC_GAP_SEC = 45
@@ -32,6 +33,14 @@ class Phase:
     AUTH = "auth"
     PAUSED = "paused"
     STOPPED = "stopped"
+
+
+def human_nap(seconds: float) -> str:
+    """Длительность сна человеческими словами."""
+    minutes = int(seconds // 60)
+    if minutes < 60:
+        return f"{max(1, minutes)} мин"
+    return f"{minutes // 60} ч {minutes % 60:02d} мин"
 
 
 PHASE_LABEL = {
@@ -97,15 +106,29 @@ class BumpEngine:
         self._auth_needed = False
         self._backoff = 30.0
 
+        self._wake_timer = WakeTimer()
+        self._sleep_detector = SleepDetector()
+        self._awake_held = False
+
     # ------------------------------------------------------------ фасад UI
 
     def start(self) -> None:
+        if self.cfg.settings.prevent_sleep:
+            self._awake_held = keep_awake(True)
+            if self._awake_held:
+                self.log.info("Компьютеру запрещено засыпать по бездействию")
+            else:
+                self.log.warn("Не удалось запретить засыпание по бездействию")
         self._thread = threading.Thread(target=self._run, name="engine", daemon=True)
         self._thread.start()
 
     def stop(self) -> None:
         self._stop.set()
         self._wake.set()
+        if self._awake_held:
+            keep_awake(False)
+            self._awake_held = False
+        self._wake_timer.close()
 
     def join(self, timeout: float = 5.0) -> None:
         if self._thread:
@@ -307,6 +330,17 @@ class BumpEngine:
         self.cfg.save()
         return touched
 
+    def _arm_wake_timer(self, seconds: float) -> None:
+        """Разбудить компьютер к моменту поднятия, если он успеет заснуть.
+
+        Ставим будильник чуть раньше срока: системе нужно время подняться,
+        а сети — подключиться.
+        """
+        if not self.cfg.settings.wake_from_sleep or not self._wake_timer.supported:
+            return
+        lead = 60.0
+        self._wake_timer.arm(max(1.0, seconds - lead))
+
     def _compute_wait(self) -> float:
         """Сколько спать до следующего осмысленного действия."""
         now = time.time()
@@ -326,7 +360,12 @@ class BumpEngine:
         return target - now
 
     def _sleep(self, seconds: float) -> None:
-        """Спать, просыпаясь на команды пользователя."""
+        """Спать, просыпаясь на команды пользователя.
+
+        Заодно ловим момент, когда система сама уходила в сон: тогда время
+        ожидания истекло не по нашим часам, и сверяться с сервером нужно
+        немедленно, а не досиживать остаток.
+        """
         deadline = time.time() + seconds
         while not self._stop.is_set():
             remaining = deadline - time.time()
@@ -334,6 +373,15 @@ class BumpEngine:
                 return
             if self._wake.wait(min(TICK_SEC, remaining)):
                 self._wake.clear()
+                return
+            napped = self._sleep_detector.check()
+            if napped:
+                self.log.info(
+                    f"Компьютер просыпался после сна ({human_nap(napped)}) — "
+                    "сверяемся с сервером"
+                )
+                with self._lock:
+                    self._force_sync = True
                 return
 
     # -------------------------------------------------------------- цикл
@@ -388,7 +436,9 @@ class BumpEngine:
                 self._sync()
 
         self._set_phase(Phase.WAITING, "ждём разрешённого времени")
-        self._sleep(self._compute_wait())
+        pause = self._compute_wait()
+        self._arm_wake_timer(pause)
+        self._sleep(pause)
 
     def _on_token_error(self, exc: TokenError) -> None:
         self.log.error(f"Авторизация слетела: {exc}")

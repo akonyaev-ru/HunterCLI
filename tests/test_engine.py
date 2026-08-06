@@ -9,7 +9,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from harness import Report, sandbox
+from harness import Report, quiet_server, sandbox
 
 sandbox()
 
@@ -121,8 +121,7 @@ def _make_engine(token: str, refresh: str = "RT") -> tuple[BumpEngine, Config, L
 def run() -> bool:
     report = Report("Движок автопилота")
 
-    server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
-    server.daemon_threads = True
+    server = quiet_server(ThreadingHTTPServer)(("127.0.0.1", PORT), Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     # Глобальные настройки модулей обязательно вернуть: иначе следующий тест
     # пойдёт стучаться в наш поддельный (и уже мёртвый) сервер.

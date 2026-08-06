@@ -7,7 +7,7 @@ import threading
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from harness import Report, sandbox
+from harness import Report, quiet_server, sandbox
 
 sandbox()
 
@@ -86,8 +86,7 @@ JAR_USER = {"hhtoken": "user-token", "hhrole": "applicant", "hhuid": "42",
 def run() -> bool:
     report = Report("Авторизация")
 
-    server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
-    server.daemon_threads = True
+    server = quiet_server(ThreadingHTTPServer)(("127.0.0.1", PORT), Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
 
     saved = auth.AUTHORIZE_URL, auth.APPROVE_URL, auth.TOKEN_URL

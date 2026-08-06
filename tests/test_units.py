@@ -15,7 +15,8 @@ sandbox()
 import huntercli.config as config_mod
 from huntercli import auth, secrets
 from huntercli.config import Config, Settings
-from huntercli.engine import BumpEngine
+from huntercli.engine import BumpEngine, human_nap
+from huntercli.power import SleepDetector, WakeTimer, keep_awake
 from huntercli.hh import (
     AUTH_ERROR_MARKERS,
     Resume,
@@ -174,6 +175,32 @@ def run() -> bool:
                  [e.text for e in after] == ["строка 3", "строка 4"],
                  f"-> {[e.text for e in after]}")
     report.check("since с нуля отдаёт всё, что есть", len(bus.since(0)) == 3)
+
+    report.section("Сон, блокировка, крышка")
+    detector = SleepDetector()
+    report.check("обычное ожидание сном не считается", detector.check() == 0.0)
+    # Подделываем расхождение часов: во сне монотонные стоят, календарные идут.
+    detector._wall -= 900
+    napped = detector.check()
+    report.check("сон опознан по расхождению часов", 880 < napped < 920,
+                 f"-> {napped:.0f} с")
+    report.check("после проверки счётчик сброшен", detector.check() == 0.0)
+    report.check("длительность сна по-человечески", human_nap(900) == "15 мин",
+                 f"-> {human_nap(900)!r}")
+    report.check("длинный сон в часах", human_nap(7800) == "2 ч 10 мин",
+                 f"-> {human_nap(7800)!r}")
+
+    timer = WakeTimer()
+    report.check("будильник пробуждения создан", timer.supported)
+    report.check("будильник заводится", timer.arm(3600))
+    report.check("будильник снимается", timer.cancel())
+    timer.close()
+    report.check("повторное закрытие не ломает", timer.close() is None)
+
+    report.check("запрет засыпания включается", keep_awake(True))
+    report.check("и снимается", keep_awake(False))
+    report.check("настройки по умолчанию — беречь работу автопилота",
+                 Settings().prevent_sleep and Settings().wake_from_sleep)
 
     report.section("Планирование поднятий")
     engine = BumpEngine(Config(), None, LogBus(to_file=False))

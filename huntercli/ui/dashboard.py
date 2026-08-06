@@ -394,9 +394,10 @@ class Dashboard:
     def render(self, snap: Snapshot) -> RenderableType:
         width, height = self.console.size
         # Какой именно логотип поместится, решает сам banner: нам важно лишь,
-        # хватает ли места хоть на какой-то.
+        # хватает ли места хоть на какой-то. Высоту спрашиваем у него же —
+        # со значком логотип на строку выше.
         tall_header = height >= 30 and width >= banner.MIN_ART_WIDTH
-        header_size = 8 if tall_header else 2
+        header_size = banner.art_height(width, compact=not tall_header) + 2
         log_size = 10 if height >= 34 else (8 if height >= 28 else 6)
         wide = width >= 92
 

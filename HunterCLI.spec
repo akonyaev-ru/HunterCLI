@@ -57,6 +57,10 @@ exe = EXE(
     name='HunterCLI',
     # Свойства файла: версия и автор видны в «Подробно» у .exe.
     version='version_info.txt',
+    # icon.ico собран tools/make_icon.py сразу во всех ходовых размерах.
+    # Один большой размер класть нельзя: Windows масштабирует его сама, грубо,
+    # и в панели задач иконка выглядит размытой.
+    icon='icon.ico',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

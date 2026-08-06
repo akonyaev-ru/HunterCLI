@@ -29,6 +29,12 @@ class Settings:
     quiet_hours: list[int] | None = None
     #: Сколько строк журнала держать в памяти.
     log_lines: int = 400
+    #: Не давать компьютеру засыпать по бездействию, пока программа работает.
+    #: На явный сон (крышка, «Пуск → Сон») не влияет: это решает Windows.
+    prevent_sleep: bool = True
+    #: Будить компьютер из сна к моменту поднятия. Требует, чтобы в настройках
+    #: питания были разрешены таймеры пробуждения.
+    wake_from_sleep: bool = True
 
     def is_managed(self, resume_id: str) -> bool:
         return self.managed_resumes is None or resume_id in self.managed_resumes
