@@ -28,11 +28,35 @@ from .theme import (
     MUTED,
     OK as OK_COLOR,
     WARN as WARN_COLOR,
-    ellipsis,
     gradient_bar,
     human_span,
     spinner,
 )
+
+#: С этой ширины сводка встаёт сбоку от таблицы, а не над ней.
+WIDE_LAYOUT_WIDTH = 92
+#: Заголовок без логотипа: подпись и линейка под ней.
+COMPACT_HEADER_ROWS = 2
+#: Полная сводка в узкой раскладке: рамка, фаза, счётчики, отсчёт и полоса.
+COMPACT_STATUS_ROWS = 6
+#: Рамка панели плюс шапка таблицы с линейкой — столько уходит не на резюме.
+TABLE_CHROME_ROWS = 4
+#: Панели резюме нужно хотя бы это, чтобы показать одну строку, а не пустоту.
+MIN_TABLE_PANEL = 5
+#: Ширина колонки времени: «12:17:33» плюс пробел, чтобы значок уровня не
+#: прилипал к цифрам.
+LOG_CLOCK_WIDTH = 9
+#: Что в строке журнала занято не текстом: рамка панели с отступами (4),
+#: время, значок уровня (1) и два пробела между колонками.
+LOG_CHROME_WIDTH = LOG_CLOCK_WIDTH + 7
+#: Разделитель между фактами в однострочной сводке.
+FACT_SEPARATOR = "  ·  "
+#: Пока сводке достаётся хотя бы столько строк, она сохраняет отбивку под
+#: заголовком; дальше отбивка уходит первой.
+MIN_SUMMARY_ROWS = 3
+#: Ниже этих значений тело не заслуживает логотипа над собой.
+MIN_WIDE_BODY = 8
+MIN_NARROW_BODY = COMPACT_STATUS_ROWS + MIN_TABLE_PANEL
 
 PHASE_STYLE = {
     Phase.STARTING: ACCENT_SOFT,
@@ -146,10 +170,25 @@ class Dashboard:
         self._toast = message
         self._toast_until = time.time() + seconds
 
-    def _toast_line(self) -> Text:
-        if time.time() > self._toast_until or not self._toast:
+    def _toast_line(self, width: int, *, last_log: bool = False) -> Text:
+        """Строка под телом: подсказка, а в её отсутствие — свежая запись.
+
+        Совсем низкому окну панель журнала не достаётся, и тогда эта строка
+        остаётся единственным местом, где видно, что программа что-то делает.
+        """
+        if time.time() <= self._toast_until and self._toast:
+            line = Text(f"  {self._toast}", style=f"bold {ACCENT_SOFT}",
+                        no_wrap=True, overflow="ellipsis")
+        elif last_log:
+            entries = self.log.tail(1)
+            if not entries:
+                return Text("")
+            line = Text(f"  {entries[0].clock}  {entries[0].text}", style=MUTED,
+                        no_wrap=True, overflow="ellipsis")
+        else:
             return Text("")
-        return Text(f"  {self._toast}", style=f"bold {ACCENT_SOFT}")
+        line.truncate(max(4, width), overflow="ellipsis")
+        return line
 
     # ------------------------------------------------------------- блоки
 
@@ -158,7 +197,28 @@ class Dashboard:
         head = banner.render(width, compact=not tall, tick=self.tick)
         return Group(head, _rule(width))
 
-    def _resume_table(self, snap: Snapshot, width: int) -> RenderableType:
+    @staticmethod
+    def _fit_resumes(snap: Snapshot, rows: int) -> tuple[list[tuple[int, object]], int]:
+        """Что поместится в таблицу: у резюме с проблемой строки две.
+
+        Если влезают не все, одну строку придерживаем под счётчик спрятанных:
+        молча обрезанный список выглядит как полный, и это хуже всего.
+        """
+        budget = max(1, rows)
+        total = len(snap.resumes)
+        shown: list[tuple[int, object]] = []
+        used = 0
+        for index, item in enumerate(snap.resumes, start=1):
+            cost = 2 if item.problem else 1
+            reserve = 1 if index < total and budget >= 3 else 0
+            if used + cost + reserve > budget:
+                break
+            shown.append((index, item))
+            used += cost
+        return shown, used
+
+    def _resume_table(self, snap: Snapshot, width: int, rows: int) -> tuple[RenderableType, str]:
+        """Таблица резюме и заголовок для её панели."""
         table = Table(
             box=box.SIMPLE_HEAD,
             header_style=f"bold {ACCENT}",
@@ -177,17 +237,21 @@ class Dashboard:
             table.add_column("ПРОСМ.", width=9, justify="right", no_wrap=True)
         table.add_column("СЛЕДУЮЩЕЕ", width=11, justify="right", no_wrap=True)
 
+        blanks = ["", "", ""] if roomy else ["", ""]
         if not snap.resumes:
             hint = "ещё не загружено" if snap.phase in (Phase.STARTING, Phase.SYNCING) else "резюме не найдены"
-            blanks = ["", "", ""] if roomy else ["", ""]
             table.add_row("", Text(hint, style=MUTED), *blanks)
-            return table
+            return table, "РЕЗЮМЕ"
 
         now = time.time()
-        for index, item in enumerate(snap.resumes, start=1):
+        shown, used = self._fit_resumes(snap, rows)
+        for index, item in shown:
             name = Text(item.title, style="white", no_wrap=True, overflow="ellipsis")
             if item.problem:
-                name.append("\n" + item.problem, style=ERR)
+                # Отступ и уголок: без них причина отказа читается как название
+                # следующего резюме. Символ рамочный — он есть в любом шрифте
+                # терминала, в отличие от стрелок.
+                name.append("\n  └ " + item.problem, style=ERR)
 
             if item.blocked:
                 status, when = Text("■ заблокировано", style=ERR), Text("—", style=MUTED)
@@ -211,7 +275,16 @@ class Dashboard:
                 cells.append(self._views_cell(item))
             cells.append(when)
             table.add_row(*cells)
-        return table
+
+        hidden = len(snap.resumes) - len(shown)
+        if not hidden:
+            return table, "РЕЗЮМЕ"
+        if used < max(1, rows):
+            table.add_row("", Text(f"…и ещё {hidden}", style=MUTED), *blanks)
+            return table, "РЕЗЮМЕ"
+        # Строки под счётчик не нашлось — говорим о недоборе в заголовке
+        # панели: молча обрезанный список выглядит как полный.
+        return table, f"РЕЗЮМЕ · показаны {len(shown)} из {len(snap.resumes)}"
 
     @staticmethod
     def _views_cell(item) -> Text:
@@ -234,58 +307,105 @@ class Dashboard:
         detail.truncate(max(4, inner_width), overflow="ellipsis")
         return Group(head, detail)
 
+    def _status_entries(self, snap: Snapshot, width: int) -> list[tuple[int, str, Text]]:
+        """Строки сводки: (очерёдность вытеснения, подпись, значение).
+
+        Список идёт в порядке показа, а число говорит, чем жертвовать первым,
+        когда строк не хватает: 0 остаётся всегда, дальше по возрастанию.
+        Обратного отсчёта здесь нет намеренно — под него место резервируется
+        раньше сводки, потому что ради него на панель и смотрят.
+        """
+        entries: list[tuple[int, str, Text]] = []
+
+        if snap.account:
+            # Имя может быть длинным (в него уходит и почта), а колонка узкая.
+            name = Text(snap.account, style="bold white", no_wrap=True, overflow="ellipsis")
+            name.truncate(max(6, width - 10), overflow="ellipsis")
+            entries.append((3, "Аккаунт", name))
+
+        entries.append((7, "В работе", Text(
+            human_span(time.time() - snap.started_at, short=True), style="bold white")))
+        entries.append((1, "Резюме", Text(
+            f"{snap.managed_count} из {len(snap.resumes)}", style="bold white")))
+        entries.append((2, "За сеанс", Text(str(snap.session_bumps), style="bold white")))
+        entries.append((5, "Всего", Text(str(snap.total_bumps), style="bold white")))
+        entries.append((6, "Последнее", Text(
+            datetime.fromtimestamp(snap.last_bump_at).strftime("%d.%m %H:%M")
+            if snap.last_bump_at else "—", style="bold white")))
+
+        if snap.token_seconds_left:
+            days = snap.token_seconds_left / 86400
+            entries.append((4, "Токен", Text(
+                f"{days:.0f} дн", style=OK_COLOR if days > 3 else WARN_COLOR)))
+        else:
+            entries.append((4, "Токен", Text(
+                "бессрочно?" if snap.account else "—", style=MUTED)))
+
+        if snap.offline_since:
+            entries.append((0, "Без сети", Text(
+                human_span(time.time() - snap.offline_since, short=True), style=WARN_COLOR)))
+        return entries
+
+    @staticmethod
+    def _summary_grid(rows: list[tuple[int, str, Text]]) -> Table:
+        grid = Table.grid(padding=(0, 1), expand=True)
+        grid.add_column(style=MUTED, no_wrap=True)
+        grid.add_column(justify="right", no_wrap=True)
+        for _, key, value in rows:
+            grid.add_row(key, value)
+        return grid
+
     def _status_panel(self, snap: Snapshot, height: int, width: int) -> RenderableType:
         inner = max(8, width - 4)
         head = self._phase_head(snap, inner)
         head_rows = 2 if snap.detail else 1
 
-        grid = Table.grid(padding=(0, 1), expand=True)
-        grid.add_column(style=MUTED, no_wrap=True)
-        grid.add_column(justify="right", style="bold white", no_wrap=True)
-
-        def row(key: str, value: str, style_override: str | None = None) -> None:
-            grid.add_row(key, Text(value, style=style_override or "bold white"))
-
-        row("В работе", human_span(time.time() - snap.started_at, short=True))
-        row("Резюме", f"{snap.managed_count} из {len(snap.resumes)}")
-        row("За сеанс", str(snap.session_bumps))
-        row("Всего", str(snap.total_bumps))
-        row(
-            "Последнее",
-            datetime.fromtimestamp(snap.last_bump_at).strftime("%d.%m %H:%M")
-            if snap.last_bump_at
-            else "—",
-        )
-
-        if snap.token_seconds_left:
-            days = snap.token_seconds_left / 86400
-            token_style = OK_COLOR if days > 3 else WARN_COLOR
-            row("Токен", f"{days:.0f} дн", token_style)
-        else:
-            row("Токен", "бессрочно?" if snap.account else "—", MUTED)
-
-        if snap.offline_since:
-            row("Без сети", human_span(time.time() - snap.offline_since, short=True), WARN_COLOR)
-
-        parts: list[RenderableType] = [head, Text(), grid]
-
-        # Считаем строки честно: панель обрезает молча, и обратный отсчёт
-        # рискует потерять полосу прогресса, оставив висеть одну подпись.
+        # Считаем строки честно: панель обрезает молча. Порядок раздачи —
+        # заголовок, обратный отсчёт, сводка по очерёдности, и только из
+        # остатка пустые строки-разделители.
         budget = max(3, height - 2)          # минус рамка панели
-        used = head_rows + 1 + grid.row_count
         countdown = self._countdown(snap, inner)
+        countdown_rows = 2 if countdown is not None else 0
+
+        entries = self._status_entries(snap, inner)
+        room = max(0, budget - head_rows - countdown_rows)
+        # Пустая строка под заголовком — часть рисунка панели, а не остаток:
+        # без неё сводка слипается с фазой. Уступает она только тем строкам,
+        # без которых сводка перестаёт что-либо значить.
+        gap = 1 if room > MIN_SUMMARY_ROWS else 0
+        room -= gap
+
+        by_priority = sorted(range(len(entries)), key=lambda i: entries[i][0])
+        keep = set(by_priority[:room])
+        rows = [entry for index, entry in enumerate(entries) if index in keep]
+
+        parts: list[RenderableType] = [head]
+        if gap:
+            parts.append(Text())
+        if rows:
+            parts.append(self._summary_grid(rows))
         if countdown is not None:
-            if used + 3 <= budget:           # пустая строка плюс две строки
-                parts.extend([Text(), countdown])
-            elif used + 2 <= budget:         # впритык, без пустой строки
-                parts.append(countdown)
+            if room - len(rows) > 0:
+                parts.append(Text())
+            parts.append(countdown)
 
         hot = snap.phase in (Phase.BUMPING, Phase.AUTH)
         return _panel(Group(*parts), "СТАТУС", hot=hot)
 
-    def _compact_status(self, snap: Snapshot, width: int) -> RenderableType:
-        """Сводка в три строки для узких окон — экономит место под таблицу."""
+    def _compact_status(self, snap: Snapshot, width: int, height: int) -> RenderableType:
+        """Сводка для узких окон — экономит место под таблицу.
+
+        Строк достаётся от одной до четырёх, поэтому содержимое собирается под
+        выданный бюджет. Обратный отсчёт держится до последнего: в одну строку
+        он уезжает к фазе, а жертвуют сначала полосой, потом счётчиками.
+        """
         inner = max(8, width - 4)
+        rows = max(1, height - 2)
+        hot = snap.phase in (Phase.BUMPING, Phase.AUTH)
+
+        if rows == 1:
+            return _panel(self._status_oneliner(snap, inner), "СТАТУС", hot=hot)
+
         style = PHASE_STYLE.get(snap.phase, ACCENT)
         head = Text(no_wrap=True, overflow="ellipsis")
         head.append(f"{spinner(self.tick)} ", style=style)
@@ -294,29 +414,68 @@ class Dashboard:
             head.append(f"  ·  {snap.detail}", style=MUTED)
         head.truncate(inner, overflow="ellipsis")
 
+        # Кусочки добавляем только целиком: обрезанный по букве «токен 11 …»
+        # или повисший разделитель читаются как сбой отрисовки.
         facts = Text(no_wrap=True, overflow="ellipsis")
-        facts.append(f"{snap.managed_count}/{len(snap.resumes)} резюме", style="bold white")
-        facts.append("  ·  ", style=MUTED)
-        facts.append(f"за сеанс {snap.session_bumps}", style="bold white")
-        facts.append("  ·  ", style=MUTED)
-        facts.append(f"всего {snap.total_bumps}", style="bold white")
+
+        full = False
+
+        def fact(value: str, style: str) -> None:
+            nonlocal full
+            gap = len(FACT_SEPARATOR) if facts.cell_len else 0
+            if full or facts.cell_len + gap + len(value) > inner:
+                # Дальше не идём: иначе строка теряет важное и показывает
+                # то, что покороче, а состав скачет от кадра к кадру.
+                full = True
+                return
+            if gap:
+                facts.append(FACT_SEPARATOR, style=MUTED)
+            facts.append(value, style=style)
+
+        fact(f"{snap.managed_count}/{len(snap.resumes)} резюме", "bold white")
+        fact(f"за сеанс {snap.session_bumps}", "bold white")
+        fact(f"всего {snap.total_bumps}", "bold white")
         if snap.token_seconds_left:
-            facts.append("  ·  ", style=MUTED)
-            facts.append(f"токен {snap.token_seconds_left / 86400:.0f} дн", style=MUTED)
+            fact(f"токен {snap.token_seconds_left / 86400:.0f} дн", MUTED)
+        if snap.account:
+            fact(snap.account, MUTED)
+        facts.truncate(inner, overflow="ellipsis")
 
-        parts: list[RenderableType] = [head, facts]
-        countdown = self._countdown(snap, inner)
-        if countdown is not None:
-            parts.append(countdown)
-        return _panel(Group(*parts), "СТАТУС", hot=snap.phase in (Phase.BUMPING, Phase.AUTH))
+        line = self._countdown_line(snap)
+        parts: list[RenderableType] = [head]
+        left = rows - 1
+        # Счётчику нужна строка: сводку показываем, только если она не отнимет
+        # у него последнее место.
+        if left >= (2 if line is not None else 1):
+            parts.append(facts)
+            left -= 1
+        if line is not None and left >= 1:
+            parts.append(line)
+            left -= 1
+            if left >= 1:
+                parts.append(self._countdown_bar(snap, inner))
+        return _panel(Group(*parts), "СТАТУС", hot=hot)
 
-    def _countdown(self, snap: Snapshot, width: int) -> RenderableType | None:
+    def _status_oneliner(self, snap: Snapshot, width: int) -> Text:
+        """Самое нужное в одной строке: фаза, счёт резюме и обратный отсчёт."""
+        style = PHASE_STYLE.get(snap.phase, ACCENT)
+        text = Text(no_wrap=True, overflow="ellipsis")
+        text.append(f"{spinner(self.tick)} ", style=style)
+        text.append(PHASE_LABEL.get(snap.phase, snap.phase.upper()), style=f"bold {style}")
+        text.append("  ·  ", style=MUTED)
+        text.append(f"{snap.managed_count}/{len(snap.resumes)} резюме", style="bold white")
+        if snap.next_action_at is not None:
+            left = max(0.0, snap.next_action_at - time.time())
+            text.append("  ·  ", style=MUTED)
+            text.append(f"через {human_span(left)}", style=f"bold {ACCENT_SOFT}")
+        text.truncate(width, overflow="ellipsis")
+        return text
+
+    def _countdown_line(self, snap: Snapshot) -> RenderableType | None:
+        """Подпись обратного отсчёта — одна строка."""
         if snap.next_action_at is None:
             return None
         left = max(0.0, snap.next_action_at - time.time())
-        span = max(snap.wait_span, 1.0)
-        done = 1.0 - min(1.0, left / span)
-
         line = Table.grid(expand=True)
         line.add_column(no_wrap=True)
         line.add_column(justify="right", no_wrap=True)
@@ -324,27 +483,44 @@ class Dashboard:
             Text("Следующее поднятие", style=MUTED),
             Text(human_span(left), style=f"bold {ACCENT_SOFT}"),
         )
-        return Group(line, Text.from_markup(gradient_bar(done, max(8, min(width, 40)))))
+        return line
 
-    def _log_panel(self, lines: int) -> RenderableType:
+    def _countdown_bar(self, snap: Snapshot, width: int) -> Text:
+        left = max(0.0, (snap.next_action_at or 0.0) - time.time())
+        span = max(snap.wait_span, 1.0)
+        done = 1.0 - min(1.0, left / span)
+        return Text.from_markup(gradient_bar(done, max(8, min(width, 40))))
+
+    def _countdown(self, snap: Snapshot, width: int) -> RenderableType | None:
+        """Подпись вместе с полосой — две строки."""
+        line = self._countdown_line(snap)
+        if line is None:
+            return None
+        return Group(line, self._countdown_bar(snap, width))
+
+    def _log_panel(self, lines: int, width: int) -> RenderableType:
         entries = self.log.tail(lines)
         if not entries:
             body: RenderableType = Text("пока тихо", style=MUTED)
         else:
+            # Ширину текста считаем сами. Колонка без переноса просит ровно
+            # столько, сколько в ней символов, и Rich начинает ужимать соседние:
+            # время сжималось до «12:0…». А без no_wrap не работает overflow, и
+            # запись переносится на вторую строку без времени и значка, вытесняя
+            # снизу столько же записей.
+            room = max(12, width - LOG_CHROME_WIDTH)
             grid = Table.grid(padding=(0, 1))
-            grid.add_column(style=MUTED, no_wrap=True, width=8)
+            grid.add_column(style=MUTED, no_wrap=True, width=LOG_CLOCK_WIDTH)
             grid.add_column(no_wrap=True, width=1)
-            grid.add_column(overflow="ellipsis", ratio=1)
+            grid.add_column(width=room, no_wrap=True, overflow="ellipsis")
             for entry in entries:
                 mark, color = LEVEL_MARK.get(entry.level, ("·", MUTED))
                 text_style = ERR if entry.level == ERROR else (
                     WARN_COLOR if entry.level == WARN else "white"
                 )
-                grid.add_row(
-                    entry.clock,
-                    Text(mark, style=color),
-                    Text(entry.text, style=text_style),
-                )
+                line = Text(entry.text, style=text_style, no_wrap=True, overflow="ellipsis")
+                line.truncate(room, overflow="ellipsis")
+                grid.add_row(entry.clock, Text(mark, style=color), line)
             body = grid
         return _panel(body, "ЖУРНАЛ")
 
@@ -401,28 +577,54 @@ class Dashboard:
 
     # ------------------------------------------------------------ сборка
 
+    @staticmethod
+    def _log_size(height: int) -> int:
+        """Высота панели журнала. Ноль — окно слишком низкое даже для неё.
+
+        В совсем маленьком окне журнал уступает место таблице: подписанная
+        коробка на две строки пользы не приносит, а последняя запись всё равно
+        видна в строке под телом.
+        """
+        if height >= 34:
+            return 10
+        if height >= 28:
+            return 8
+        if height >= 22:
+            return 6
+        if height >= 18:
+            return 4
+        return 0
+
     def render(self, snap: Snapshot) -> RenderableType:
         width, height = self.console.size
-        # Какой именно логотип поместится, решает сам banner: нам важно лишь,
-        # хватает ли места хоть на какой-то. Высоту спрашиваем у него же —
-        # со значком логотип на строку выше.
-        tall_header = height >= 30 and width >= banner.MIN_ART_WIDTH
-        header_size = banner.art_height(width, compact=not tall_header) + 2
-        log_size = 10 if height >= 34 else (8 if height >= 28 else 6)
-        wide = width >= 92
+        wide = width >= WIDE_LAYOUT_WIDTH
+        log_size = self._log_size(height)
+
+        # Логотип показываем везде, где он не съедает содержимое: считаем, что
+        # останется телу, и сравниваем с необходимым минимумом. Жёсткий порог
+        # по высоте убирал заголовок и в тех окнах, где места хватало с лихвой.
+        art_rows = banner.art_height(width, compact=False)
+        tall_header = art_rows > 0 and (
+            height - (art_rows + 2) - log_size - 2
+            >= (MIN_WIDE_BODY if wide else MIN_NARROW_BODY)
+        )
+        header_size = (art_rows + 2) if tall_header else COMPACT_HEADER_ROWS
 
         # Сколько строк реально достанется телу: панели считают по этому
         # числу, и ошибиться нельзя — лишнее они обрежут молча.
         body_height = max(3, height - header_size - log_size - 2)
 
-        root = Layout(name="root")
-        root.split_column(
+        rows = [
             Layout(name="header", size=header_size),
             Layout(name="body", ratio=1),
-            Layout(name="log", size=log_size),
-            Layout(name="toast", size=1),
-            Layout(name="footer", size=1),
-        )
+        ]
+        if log_size:
+            rows.append(Layout(name="log", size=log_size))
+        rows.append(Layout(name="toast", size=1))
+        rows.append(Layout(name="footer", size=1))
+
+        root = Layout(name="root")
+        root.split_column(*rows)
 
         root["header"].update(self._header(snap, width, tall_header))
 
@@ -434,21 +636,30 @@ class Dashboard:
                 Layout(name="resumes", ratio=1),
                 Layout(name="side", size=side_width),
             )
-            root["body"]["resumes"].update(
-                _panel(self._resume_table(snap, width - side_width - 4), "РЕЗЮМЕ")
+            table, title = self._resume_table(
+                snap, width - side_width - 4, body_height - TABLE_CHROME_ROWS
             )
+            root["body"]["resumes"].update(_panel(table, title))
             root["body"]["side"].update(
                 self._status_panel(snap, body_height, side_width)
             )
         else:
+            # Сводка сверху, таблица под ней. Сводка ужимается первой: пустая
+            # подписанная коробка вместо таблицы — худшее, что здесь может быть.
+            side_size = min(COMPACT_STATUS_ROWS, max(3, body_height - MIN_TABLE_PANEL))
+            table_size = body_height - side_size
             root["body"].split_column(
-                Layout(name="side", size=6),
+                Layout(name="side", size=side_size),
                 Layout(name="resumes", ratio=1),
             )
-            root["body"]["side"].update(self._compact_status(snap, width))
-            root["body"]["resumes"].update(_panel(self._resume_table(snap, width - 4), "РЕЗЮМЕ"))
+            table, title = self._resume_table(
+                snap, width - 4, table_size - TABLE_CHROME_ROWS
+            )
+            root["body"]["side"].update(self._compact_status(snap, width, side_size))
+            root["body"]["resumes"].update(_panel(table, title))
 
-        root["log"].update(self._log_panel(log_size - 2))
-        root["toast"].update(self._toast_line())
+        if log_size:
+            root["log"].update(self._log_panel(log_size - 2, width))
+        root["toast"].update(self._toast_line(width, last_log=not log_size))
         root["footer"].update(Align.left(self._footer(width - 1)))
         return root

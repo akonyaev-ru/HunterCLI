@@ -48,11 +48,6 @@ THEME = Theme(
 )
 
 SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
-PULSE = "◜◝◞◟"
-
-#: Значки статусов резюме.
-DOT_LIVE = "●"
-DOT_IDLE = "○"
 
 
 def spinner(tick: int) -> str:
@@ -76,12 +71,6 @@ def human_span(seconds: float | None, *, short: bool = False) -> str:
     return f"{secs} с"
 
 
-def bar(fraction: float, width: int, *, filled: str = "▰", empty: str = "▱") -> str:
-    fraction = min(1.0, max(0.0, fraction))
-    done = int(round(fraction * width))
-    return filled * done + empty * (width - done)
-
-
 def gradient_bar(fraction: float, width: int) -> str:
     """Полоса прогресса, окрашенная градиентом по мере заполнения."""
     fraction = min(1.0, max(0.0, fraction))
@@ -94,9 +83,3 @@ def gradient_bar(fraction: float, width: int) -> str:
         else:
             chunks.append(f"[{MUTED}]▱[/]")
     return "".join(chunks)
-
-
-def ellipsis(text: str, width: int) -> str:
-    if width <= 1 or len(text) <= width:
-        return text
-    return text[: width - 1] + "…"

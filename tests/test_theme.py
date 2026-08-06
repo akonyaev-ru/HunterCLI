@@ -68,6 +68,24 @@ def run() -> bool:
                  all(ord(ch) < 0x2500 or ch == "—" for ch in wide),
                  f"-> {sorted({ch for ch in wide if ord(ch) >= 0x2500})}")
 
+    report.section("Подпись стоит под надписью, а не съезжает")
+    # Значок слева тянет оптический центр на себя, поэтому подпись считается
+    # от надписи. Округление должно совпадать с Align.center, иначе строка
+    # уезжает на столбец — на неподвижном экране это заметно.
+    for width in (84, 100, 110, 120, 132, 140, 160):
+        art = banner._art_for(width)
+        sub = banner.subtitle(width)
+        placed = banner._place_subtitle(width, art, sub)
+        left = len(placed.plain) - len(placed.plain.lstrip(" "))
+        if banner._shows_mark(width, art):
+            word_start = ((width - banner.FULL_WIDTH) // 2
+                          + banner.MARK_WIDTH + banner.MARK_GAP)
+        else:
+            word_start = (width - len(art[0])) // 2
+        offset = (left + sub.cell_len / 2) - (word_start + len(art[0]) / 2)
+        report.check(f"{width}: подпись по центру надписи", abs(offset) <= 0.5,
+                     f"-> сдвиг {offset:+.1f}")
+
     report.section("Значок: размер и моргание")
     report.check("значок высотой с надпись",
                  len(banner.mark_lines()) == len(banner.BIG),

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import io
 import os
+import re
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -23,7 +24,10 @@ from huntercli.logbus import LogBus
 from huntercli.ui.dashboard import Dashboard
 from huntercli.ui.theme import THEME
 
-SIZES = [(140, 44), (120, 40), (100, 32), (84, 26), (70, 22), (60, 18)]
+#: Ряд намеренно доходит до минимума, который принимает app.py (58x14):
+#: именно на маленьких окнах вёрстка и разъезжается.
+SIZES = [(140, 44), (120, 40), (100, 32), (92, 30), (84, 26), (70, 22),
+         (64, 20), (60, 18), (58, 14)]
 PREVIEW = os.path.join(os.path.dirname(os.path.abspath(__file__)), "render-preview.txt")
 
 
@@ -88,13 +92,49 @@ def _demo_snapshot() -> Snapshot:
 
 
 def _render(board_setup, snap, log, width, height) -> str:
+    # legacy_windows=False: иначе Rich отдаёт на столбец меньше, чем просили,
+    # и все замеры ширины уезжают на единицу.
     console = Console(theme=THEME, highlight=False, file=io.StringIO(), width=width,
-                      height=height, force_terminal=True, color_system="truecolor", record=True)
+                      height=height, force_terminal=True, color_system="truecolor",
+                      record=True, legacy_windows=False)
     board = Dashboard(console, log)
     board.tick = 4
     board_setup(board)
     console.print(board.render(snap))
     return console.export_text()
+
+
+TOP, BOTTOM = ("╭", "┌"), ("╰", "└")
+
+
+def _log_lines(text: str) -> list[str]:
+    """Строки внутри панели журнала. Она всегда во всю ширину окна."""
+    lines, inside = [], False
+    for raw in text.splitlines():
+        line = raw.rstrip()
+        if line.startswith(TOP) and "ЖУРНАЛ" in line:
+            inside = True
+        elif inside and line.startswith(BOTTOM):
+            break
+        elif inside and line.startswith("│"):
+            body = line[1:].rstrip("│ ")
+            if body.strip():
+                lines.append(body)
+    return lines
+
+
+def _empty_panels(text: str) -> list[str]:
+    """Панели без единой строки содержимого: за верхней рамкой сразу нижняя.
+
+    В широкой раскладке панели стоят рядом и делят строку, поэтому смотрим не
+    на отдельную панель, а на пару соседних строк-рамок.
+    """
+    lines = [raw.rstrip() for raw in text.splitlines()]
+    return [
+        lines[index].strip()
+        for index in range(len(lines) - 1)
+        if lines[index].startswith(TOP) and lines[index + 1].startswith(BOTTOM)
+    ]
 
 
 def run() -> bool:
@@ -111,8 +151,71 @@ def run() -> bool:
                      f"(строк {len(lines)})")
         report.check(f"{width}x{height}: высота не превышена", len(lines) <= height,
                      f"-> {len(lines)}")
-        report.check(f"{width}x{height}: видно первое резюме", "Ведущий юрист" in text)
+        # Именно строкой таблицы, а не упоминанием в журнале: когда панель
+        # резюме схлопывалась совсем, проверка по названию всё равно проходила.
+        report.check(f"{width}x{height}: в таблице есть первое резюме",
+                     re.search(r"│\s+1\s+Ведущий", text) is not None)
+        # Рамки считаем по углам: панель без верхней границы Rich рисует молча.
+        report.check(f"{width}x{height}: все панели закрыты",
+                     text.count("╭") == text.count("╰"),
+                     f"-> открыто {text.count('╭')}, закрыто {text.count('╰')}")
         chunks.append(f"\n{'=' * width}\n=== {width}x{height} ===\n{'=' * width}\n{text}")
+
+    report.section("Панели не бывают пустыми")
+    # Подписанная коробка без содержимого читается как поломка программы.
+    for width, height in SIZES:
+        text = _render(lambda b: None, snap, log, width, height)
+        empty = _empty_panels(text)
+        report.check(f"{width}x{height}: у каждой панели есть содержимое", not empty,
+                     f"-> {empty}")
+
+    report.section("Журнал обрезает, а не переносит")
+    # Строка без времени в начале — это перенос: он ломает сетку и вытесняет
+    # снизу столько же записей, сколько занял.
+    for width, height in SIZES:
+        text = _render(lambda b: None, snap, log, width, height)
+        rows = _log_lines(text)
+        stamped = [row for row in rows if re.match(r"\s*\d\d:\d\d:\d\d ", row)]
+        report.check(f"{width}x{height}: каждая строка журнала со временем",
+                     len(rows) == len(stamped), f"-> {len(stamped)} из {len(rows)}")
+        report.check(f"{width}x{height}: время не ужато", all("…" not in r[:10] for r in rows))
+
+    report.section("Обратный отсчёт не выбрасывается")
+    # Ради него на экран и смотрят: панель скорее расстанется со счётчиками.
+    for width, height in SIZES:
+        text = _render(lambda b: None, snap, log, width, height)
+        # Ищем именно подпись счётчика или его значение вида 3:27:59. Простое
+        # «через » проходило и на журнале («повтор через 3 с»).
+        report.check(f"{width}x{height}: обратный отсчёт на месте",
+                     "Следующее поднятие" in text
+                     or re.search(r"через \d+:\d\d:\d\d", text) is not None)
+
+    report.section("Обрезанный список резюме не молчит")
+    crowded = _demo_snapshot()
+    crowded.resumes = crowded.resumes + [
+        Resume(id=str(number), title=f"Резюме номер {number}",
+               total_views=number, planned_at=time.time() + 600 * number)
+        for number in range(6, 26)
+    ]
+    for width, height in SIZES:
+        text = _render(lambda b: None, crowded, log, width, height)
+        report.check(f"{width}x{height}: о спрятанных резюме сказано",
+                     "…и ещё" in text or "показаны" in text)
+
+    report.section("Логотип показывается там, где помещается")
+    roomy = _render(lambda b: None, snap, log, 140, 29)
+    report.check("широкое невысокое окно: логотип на месте", "██╗" in roomy)
+    # А там, где логотип съел бы содержимое, он уступает место таблице.
+    cramped = _render(lambda b: None, snap, log, 140, 20)
+    report.check("низкое окно: место отдано таблице",
+                 "██╗" not in cramped
+                 and re.search(r"│\s+1\s+Ведущий", cramped) is not None)
+
+    report.section("Аккаунт и причина отказа видны")
+    full = _render(lambda b: None, snap, log, 120, 40)
+    report.check("имя аккаунта показано", "Алексей К." in full)
+    report.check("причина отказа с отступом под названием",
+                 "└ исчерпан дневной лимит" in full)
 
     report.section("Особые состояния")
     help_text = _render(lambda b: setattr(b, "show_help", True), snap, log, 120, 40)
@@ -130,8 +233,10 @@ def run() -> bool:
                      and not [ln for ln in lines if len(ln) > width])
         report.check(f"{width}x{height}: клавиши на месте", "Горячие клавиши" in text)
         # Рамка панели должна замкнуться — если раздел не влез, его выбрасывают
-        # целиком, а не режут по середине.
-        report.check(f"{width}x{height}: панель справки замкнута", "└" in text)
+        # целиком, а не режут по середине. Угол зависит от набора символов:
+        # скруглённый в обычном терминале, прямой в старой консоли Windows.
+        report.check(f"{width}x{height}: панель справки замкнута",
+                     "╰" in text or "└" in text)
 
     empty = _render(lambda b: None, Snapshot(phase=Phase.STARTING, started_at=time.time()),
                     LogBus(to_file=False), 120, 40)

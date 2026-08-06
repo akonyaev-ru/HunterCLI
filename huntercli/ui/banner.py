@@ -135,11 +135,13 @@ def _place_subtitle(width: int, art: list[str] | None, sub: Text) -> Text:
     if not _shows_mark(width, art):
         left = (width - sub.cell_len) / 2
     else:
-        block_start = (width - FULL_WIDTH) / 2
+        # Округление вниз, как у Align.center: она кладёт блок со значком
+        # именно так, и от деления пополам подпись уезжала на столбец вправо.
+        block_start = (width - FULL_WIDTH) // 2
         word_center = block_start + MARK_WIDTH + MARK_GAP + len(art[0]) / 2
         left = word_center - sub.cell_len / 2
 
-    padded = Text(" " * max(0, int(round(left))), no_wrap=True)
+    padded = Text(" " * max(0, int(left)), no_wrap=True)
     padded.append_text(sub)
     return padded
 
