@@ -605,10 +605,10 @@ class Dashboard:
         # по высоте убирал заголовок и в тех окнах, где места хватало с лихвой.
         art_rows = banner.art_height(width, compact=False)
         tall_header = art_rows > 0 and (
-            height - (art_rows + 2) - log_size - 2
+            height - (art_rows + 1) - log_size - 2
             >= (MIN_WIDE_BODY if wide else MIN_NARROW_BODY)
         )
-        header_size = (art_rows + 2) if tall_header else COMPACT_HEADER_ROWS
+        header_size = (art_rows + 1) if tall_header else COMPACT_HEADER_ROWS
 
         # Сколько строк реально достанется телу: панели считают по этому
         # числу, и ошибиться нельзя — лишнее они обрежут молча.

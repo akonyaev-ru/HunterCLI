@@ -94,7 +94,7 @@ def run() -> int:
 
     config = paths.config_path()
     can_write = paths.writable(config)
-    print(_line(can_write, "права на запись рядом с программой", os.path.dirname(config)))
+    print(_line(can_write, "права на запись в папке настроек", os.path.dirname(config)))
     if not can_write:
         problems += 1
     saved = os.path.exists(config)

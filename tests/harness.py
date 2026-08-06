@@ -26,13 +26,19 @@ _SANDBOX: str | None = None
 
 
 def sandbox() -> str:
-    """Временная папка, в которую смотрит huntercli.paths во время тестов."""
+    """Временная папка, в которую смотрит huntercli.paths во время тестов.
+
+    Подменяем обе точки входа. state_dir важнее: с версии 2026.7 конфиг и
+    журнал живут там, и без подмены тесты писали бы в настоящий
+    %LOCALAPPDATA% поверх рабочих настроек.
+    """
     global _SANDBOX
     if _SANDBOX is None:
         _SANDBOX = tempfile.mkdtemp(prefix="huntercli-tests-")
         import huntercli.paths as paths
 
         paths.base_dir = lambda: _SANDBOX
+        paths.state_dir = lambda: _SANDBOX
     return _SANDBOX
 
 

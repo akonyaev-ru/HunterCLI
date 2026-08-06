@@ -64,7 +64,10 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    # UPX не применяем. На раннере GitHub его и так нет, шаг молча пропускался,
+    # зато при локальной сборке на машине с UPX получался упакованный файл —
+    # а упаковку антивирусы считают признаком вредоноса и ругаются охотнее.
+    upx=False,
     upx_exclude=[],
     runtime_tmpdir=None,
     console=True,

@@ -34,8 +34,10 @@ from huntercli import force_utf8_output
 
 force_utf8_output()
 
-#: Конфиг и журнал при генерации картинки трогать нельзя.
+#: Конфиг и журнал при генерации картинки трогать нельзя — ни рабочие в
+#: %LOCALAPPDATA%, ни оставшиеся рядом с программой от старых версий.
 paths.base_dir = lambda: os.path.join(ROOT, "tools")
+paths.state_dir = lambda: os.path.join(ROOT, "tools")
 
 from rich.console import Console
 

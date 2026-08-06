@@ -44,8 +44,10 @@ COLS, ROWS = 22, 14
 #: глаз на значке выглядели одинаково: сжимаем только по вертикали.
 CONSOLE_COLS, CONSOLE_ROWS = 22, 12
 
-#: Строки матрицы, занятые самим глазом. Ниже идут мелкие украшения, которые
-#: при моргании остаются на месте.
+#: Строки матрицы, занятые самим глазом. По ним считается середина, к которой
+#: сходятся веки. Ниже идут отдельные точки и полоска — нижние ресницы; они
+#: тоже двигаются, но в расчёт середины не входят, иначе картинка при моргании
+#: съезжает вниз вместо того, чтобы смыкаться.
 EYE_ROWS = 10
 
 #: Насколько глаз прикрыт в каждом кадре моргания: 0 — открыт, 1 — закрыт.
@@ -104,27 +106,33 @@ def extract(cols: int, rows: int) -> list[str]:
 
 
 def blink_frame(matrix: list[str], closed: float) -> list[str]:
-    """Кадр моргания: оба века сходятся к середине глаза.
+    """Кадр моргания: картинка сходится по вертикали к середине глаза.
 
-    Глаз сжимается по вертикали к своей середине, а не схлопывается в линию
-    по столбцам: верхнее веко идёт вниз, нижнее навстречу ему вверх. Именно
-    это читается как моргание. Украшения под глазом не двигаются.
+    Глаз сжимается к своей середине, а не схлопывается в линию по столбцам:
+    верхнее веко идёт вниз, нижнее навстречу ему вверх. Именно это читается
+    как моргание.
+
+    Двигается всё, включая точки и полоску под глазом. Пока они оставались на
+    месте, моргание выглядело односторонним: верх опускался, а низ висел сам
+    по себе, оторванный от глаза.
     """
-    cols = len(matrix[0])
-    eye, tail = matrix[:EYE_ROWS], matrix[EYE_ROWS:]
-    filled = [(row, col) for row in range(EYE_ROWS) for col in range(cols)
-              if eye[row][col] == "#"]
-    if not filled:
+    rows, cols = len(matrix), len(matrix[0])
+    eye = [row for row in range(min(EYE_ROWS, rows)) for col in range(cols)
+           if matrix[row][col] == "#"]
+    if not eye:
         return list(matrix)
 
-    middle = (min(r for r, _ in filled) + max(r for r, _ in filled)) / 2
+    middle = (min(eye) + max(eye)) / 2
     scale = 1.0 - closed
-    grid = [["."] * cols for _ in range(EYE_ROWS)]
-    for row, col in filled:
-        target = int(round(middle + (row - middle) * scale))
-        if 0 <= target < EYE_ROWS:
-            grid[target][col] = "#"
-    return ["".join(row) for row in grid] + list(tail)
+    grid = [["."] * cols for _ in range(rows)]
+    for row in range(rows):
+        for col in range(cols):
+            if matrix[row][col] != "#":
+                continue
+            target = int(round(middle + (row - middle) * scale))
+            if 0 <= target < rows:
+                grid[target][col] = "#"
+    return ["".join(line) for line in grid]
 
 
 def write_matrix(open_eye: list[str], frames: list[list[str]]) -> None:

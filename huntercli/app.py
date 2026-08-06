@@ -35,6 +35,8 @@ MIN_WIDTH = 58
 class HunterApp:
     def __init__(self) -> None:
         self.console = Console(theme=THEME, highlight=False, soft_wrap=False)
+        # Строго до чтения конфига: у версий до 2026.7 он лежал рядом с .exe.
+        self._adopted = paths.adopt_legacy_files()
         self.cfg = config.load()
         self.log = LogBus(capacity=self.cfg.settings.log_lines, to_file=paths.writable(paths.log_path()))
         self.client = HHClient(self.cfg, self.log)
@@ -47,6 +49,8 @@ class HunterApp:
     def run(self) -> int:
         self._prepare_console()
         self.log.info(f"Hunter CLI {__version__} запущен")
+        if self._adopted:
+            self.log.info(f"Настройки и журнал переехали в {paths.state_dir()}")
         if not self.log.file_enabled:
             self.log.warn("Журнал не пишется на диск: нет прав на запись рядом с программой")
         if self.cfg.corrupted:

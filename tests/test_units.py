@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import tempfile
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -26,6 +28,7 @@ from huntercli.hh import (
     token_is_sendable,
 )
 from huntercli.logbus import LogBus
+import huntercli.paths as paths_mod
 from huntercli.paths import config_path
 
 
@@ -156,6 +159,50 @@ def run() -> bool:
     broken = config_mod.load()
     report.check("битый конфиг помечен, а не уронил программу", broken.corrupted)
     os.remove(config_path())
+
+    report.section("Файлы программы: рядом с .exe ничего не остаётся")
+    # Проверяем на отдельных папках: песочница тестов подменяет обе точки
+    # входа одним путём, и переезд в ней просто нечему было бы показать.
+    program = tempfile.mkdtemp(prefix="huntercli-program-")
+    settings = tempfile.mkdtemp(prefix="huntercli-settings-")
+    keep_base, keep_state = paths_mod.base_dir, paths_mod.state_dir
+    try:
+        paths_mod.base_dir = lambda: program
+        paths_mod.state_dir = lambda: settings
+
+        report.check("конфиг лежит в папке настроек",
+                     os.path.dirname(paths_mod.config_path()) == settings)
+        report.check("журнал лежит там же",
+                     os.path.dirname(paths_mod.log_path()) == settings)
+
+        with open(os.path.join(program, "config.json"), "w", encoding="utf-8") as fh:
+            json.dump({"version": 2, "auth": {"account": "Старый"}}, fh)
+        with open(os.path.join(program, "hunter.log"), "w", encoding="utf-8") as fh:
+            fh.write("старая запись\n")
+
+        moved = paths_mod.adopt_legacy_files()
+        report.check("оба файла переехали", sorted(moved) == ["config.json", "hunter.log"],
+                     f"-> {moved}")
+        report.check("рядом с программой пусто", not os.listdir(program),
+                     f"-> {os.listdir(program)}")
+        report.check("настройки не потерялись при переезде",
+                     config_mod.load().account == "Старый")
+
+        # Второй переезд поверх уже существующих настроек: свежее не затираем,
+        # но старое рядом с программой всё равно убираем.
+        with open(os.path.join(program, "config.json"), "w", encoding="utf-8") as fh:
+            json.dump({"version": 2, "auth": {"account": "Ещё старее"}}, fh)
+        again = paths_mod.adopt_legacy_files()
+        report.check("повторный переезд ничего не перенёс", again == [], f"-> {again}")
+        report.check("рядом с программой снова пусто", not os.listdir(program))
+        report.check("свежие настройки уцелели", config_mod.load().account == "Старый")
+
+        os.remove(paths_mod.config_path())
+        report.check("без старых файлов переезд молчит", paths_mod.adopt_legacy_files() == [])
+    finally:
+        paths_mod.base_dir, paths_mod.state_dir = keep_base, keep_state
+        shutil.rmtree(program, ignore_errors=True)
+        shutil.rmtree(settings, ignore_errors=True)
 
     report.section("Тихие часы")
     quiet = Settings(quiet_hours=[23, 7])

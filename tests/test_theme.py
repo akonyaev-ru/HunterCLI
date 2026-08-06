@@ -7,9 +7,13 @@
 
 from __future__ import annotations
 
+import io
+
 from harness import Report, sandbox
 
 sandbox()
+
+from rich.console import Console
 
 from huntercli import APP_NAME, APP_TAGLINE, AUTHOR, __version__
 from huntercli import logo
@@ -86,6 +90,23 @@ def run() -> bool:
         report.check(f"{width}: подпись по центру надписи", abs(offset) <= 0.5,
                      f"-> сдвиг {offset:+.1f}")
 
+    report.section("Отбивки вокруг логотипа")
+    output = io.StringIO()
+    console = Console(file=output, width=120, force_terminal=False, color_system=None)
+    console.print(banner.render(120, compact=False, tick=0))
+    rows = [line.rstrip() for line in output.getvalue().splitlines()]
+    filled = [index for index, row in enumerate(rows) if row]
+    report.check("шапка начинается с пустой строки: логотип не впритык к краю",
+                 rows and rows[0] == "", f"-> {rows[0][:30]!r}" if rows else "пусто")
+    report.check("под подписью пустая строка: шапка не срастается с интерфейсом",
+                 rows and rows[-1] == "")
+    report.check("между логотипом и подписью пустых строк нет",
+                 filled == list(range(filled[0], filled[-1] + 1)),
+                 f"-> занятые строки {filled}")
+    report.check("высота шапки совпадает с той, что закладывает дашборд",
+                 len(rows) == banner.art_height(120),
+                 f"-> {len(rows)} против {banner.art_height(120)}")
+
     report.section("Значок: размер и моргание")
     report.check("значок высотой с надпись",
                  len(banner.mark_lines()) == len(banner.BIG),
@@ -116,8 +137,21 @@ def run() -> bool:
                  len(half) > len(shut_rows), f"-> {len(half)} и {len(shut_rows)}")
     report.check("моргание симметрично: последний кадр как первый",
                  logo.BLINK[0] == logo.BLINK[-1])
-    report.check("украшения под глазом не двигаются",
-                 all(f[10:] == logo.LOGO[10:] for f in logo.BLINK))
+
+    def edges(frame) -> tuple[int, int]:
+        """Самая верхняя и самая нижняя закрашенные строки кадра."""
+        rows = [index for index, row in enumerate(frame) if "#" in row]
+        return (min(rows), max(rows)) if rows else (-1, -1)
+
+    open_top, open_bottom = edges(logo.LOGO)
+    report.check("верхнее веко опускается",
+                 all(edges(f)[0] > open_top for f in logo.BLINK),
+                 f"-> {[edges(f)[0] for f in logo.BLINK]} против {open_top}")
+    # Точки и полоска под глазом — нижние ресницы, а не отдельное украшение.
+    # Пока они стояли на месте, моргание выглядело односторонним.
+    report.check("нижнее веко поднимается навстречу",
+                 all(edges(f)[1] < open_bottom for f in logo.BLINK),
+                 f"-> {[edges(f)[1] for f in logo.BLINK]} против {open_bottom}")
 
     open_frames = [t for t in range(banner.BLINK_PERIOD) if not banner.blinking(t)]
     report.check("моргание редкое, глаз почти всегда открыт",

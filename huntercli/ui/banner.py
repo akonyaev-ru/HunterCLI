@@ -171,12 +171,21 @@ def subtitle(width: int = 120, *, with_name: bool = False) -> Text:
     return text
 
 
+#: Пустые строки вокруг логотипа: одна сверху, чтобы он не упирался в край
+#: окна, и одна под подписью, чтобы шапка не срасталась с интерфейсом. Между
+#: логотипом и подписью отбивки нет намеренно: они читаются как одно целое.
+PADDING_ROWS = 2
+
+
 def art_height(width: int, *, compact: bool = False) -> int:
-    """Сколько строк займёт логотип вместе с отступом под ним."""
+    """Сколько строк займёт заголовок без линейки под ним.
+
+    Ноль означает, что логотип в такую ширину не помещается вовсе.
+    """
     if compact:
         return 0
     lines = art_lines(width)
-    return len(lines) + 1 if lines else 0
+    return len(lines) + 1 + PADDING_ROWS if lines else 0
 
 
 def render(width: int, *, compact: bool = False, tick: int = 0) -> Group:
@@ -187,11 +196,10 @@ def render(width: int, *, compact: bool = False, tick: int = 0) -> Group:
     if art is None:
         return Group(Align.center(subtitle(width, with_name=True), width=width))
 
-    lines = art_lines(width, tick)
-    parts: list[object] = [Align.center(line, width=width) for line in lines]
-    # Пустая строка между надписью и подписью: вплотную они выглядят сжато.
-    parts.append(Text())
+    parts: list[object] = [Text()]
+    parts.extend(Align.center(line, width=width) for line in art_lines(width, tick))
     parts.append(_place_subtitle(width, art, subtitle(width)))
+    parts.append(Text())
     return Group(*parts)
 
 
@@ -201,6 +209,5 @@ def plain_header(width: int = 120) -> Group:
     if art is None:
         return Group(subtitle(width, with_name=True))
     parts: list[object] = list(art_lines(width))
-    parts.append(Text())
     parts.append(subtitle(width))
     return Group(*parts)
