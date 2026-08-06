@@ -38,7 +38,9 @@ def _ask(console: Console, prompt: str, **kwargs: object) -> str | None:
 def _shell(console: Console, body: object, title: str, *, hot: bool = False) -> None:
     console.clear()
     console.print()
-    console.print(Align.center(banner.plain_header(console.size.width)))
+    # Без Align.center: plain_header уже расставил строки по ширине окна, а
+    # внешнее выравнивание сдвинуло бы блок целиком и увело подпись влево.
+    console.print(banner.plain_header(console.size.width))
     console.print()
     console.print(
         Panel(

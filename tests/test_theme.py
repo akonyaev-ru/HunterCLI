@@ -107,6 +107,24 @@ def run() -> bool:
                  len(rows) == banner.art_height(120),
                  f"-> {len(rows)} против {banner.art_height(120)}")
 
+    report.section("Заголовок на экранах приветствия и входа")
+    # Эти экраны печатаются один раз, через plain_header. Раньше подпись там
+    # прижималась к левому краю логотипа: строки отдавались невыровненными, а
+    # внешний Align.center сдвигал блок целиком.
+    output = io.StringIO()
+    console = Console(file=output, width=120, force_terminal=False, color_system=None)
+    console.print(banner.plain_header(120))
+    printed = [line.rstrip() for line in output.getvalue().splitlines() if line.strip()]
+    word_row = next(row for row in printed if "██╗" in row)
+    word_start, word_end = word_row.index("██╗"), len(word_row)
+    sub_row = printed[-1]
+    sub_start, sub_end = len(sub_row) - len(sub_row.lstrip(" ")), len(sub_row)
+    shift = (sub_start + sub_end) / 2 - (word_start + word_end) / 2
+    report.check("подпись по центру надписи", abs(shift) <= 0.5, f"-> сдвиг {shift:+.1f}")
+    report.check("глаз на этих экранах открыт",
+                 all(mark.plain == open_mark.plain for mark, open_mark
+                     in zip(banner.mark_lines(), banner.mark_lines(20))))
+
     report.section("Значок: размер и моргание")
     report.check("значок высотой с надпись",
                  len(banner.mark_lines()) == len(banner.BIG),
@@ -161,9 +179,19 @@ def run() -> bool:
                  9 <= banner.BLINK_PERIOD / 8 <= 11,
                  f"-> {banner.BLINK_PERIOD / 8:.1f} с")
     report.check("кадры моргания идут подряд",
-                 all(banner.blinking(t) for t in range(banner.BLINK_FRAMES)))
+                 all(banner.blinking(banner.BLINK_START + t)
+                     for t in range(banner.BLINK_FRAMES)))
     report.check("значок меняется в кадре моргания",
-                 banner.mark_lines(0)[2].plain != banner.mark_lines(20)[2].plain)
+                 banner.mark_lines(banner.BLINK_START)[2].plain
+                 != banner.mark_lines(20)[2].plain)
+
+    # Экран приветствия и экран входа рисуются один раз и счётчика кадров не
+    # ведут — им достаётся нулевой кадр. Пока моргание стояло в начале
+    # периода, глаз на них был закрыт всегда.
+    report.check("нулевой кадр — открытый глаз, а не моргание",
+                 not banner.blinking(0) and banner._frame(0) == logo.LOGO)
+    report.check("моргание всё же случается внутри периода",
+                 any(banner.blinking(t) for t in range(banner.BLINK_PERIOD)))
 
     report.section("Палитра красная")
     for name in ("ACCENT", "ACCENT_SOFT", "FRAME", "FRAME_HOT", "ERR", "MUTED"):

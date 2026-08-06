@@ -51,13 +51,19 @@ BLINK_PERIOD = 82
 BLINK_FRAMES = len(logo.BLINK)
 
 
+#: Моргание стоит в КОНЦЕ периода, а не в начале. Иначе кадр с номером ноль —
+#: полуприкрытый глаз, и всё, что рисуется единожды и без счётчика (экран
+#: приветствия, экран входа, первый кадр дашборда), показывает закрытый глаз.
+BLINK_START = BLINK_PERIOD - BLINK_FRAMES
+
+
 def blinking(tick: int) -> bool:
-    return tick % BLINK_PERIOD < BLINK_FRAMES
+    return tick % BLINK_PERIOD >= BLINK_START
 
 
 def _frame(tick: int) -> tuple[str, ...]:
-    phase = tick % BLINK_PERIOD
-    return logo.BLINK[phase] if phase < BLINK_FRAMES else logo.LOGO
+    phase = tick % BLINK_PERIOD - BLINK_START
+    return logo.BLINK[phase] if phase >= 0 else logo.LOGO
 
 
 def mark_lines(tick: int = 0) -> list[Text]:
@@ -204,10 +210,18 @@ def render(width: int, *, compact: bool = False, tick: int = 0) -> Group:
 
 
 def plain_header(width: int = 120) -> Group:
-    """Заголовок для обычной (не полноэкранной) печати."""
+    """Заголовок для обычной (не полноэкранной) печати.
+
+    Строки уже расставлены по всей ширине окна, поэтому оборачивать результат
+    в Align.center не нужно. Раньше именно так и делали, и подпись съезжала:
+    Align сдвигает многострочный блок целиком, на ширину самой длинной строки,
+    а короткая подпись оставалась прижатой к левому краю логотипа.
+    """
     art = _art_for(width)
     if art is None:
-        return Group(subtitle(width, with_name=True))
-    parts: list[object] = list(art_lines(width))
-    parts.append(subtitle(width))
+        return Group(Align.center(subtitle(width, with_name=True), width=width))
+    parts: list[object] = [
+        Align.center(line, width=width) for line in art_lines(width)
+    ]
+    parts.append(_place_subtitle(width, art, subtitle(width)))
     return Group(*parts)
