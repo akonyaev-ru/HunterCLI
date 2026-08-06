@@ -44,20 +44,25 @@ FULL_WIDTH = MARK_WIDTH + MARK_GAP + BIG_WIDTH
 MIN_ART_WIDTH = MID_WIDTH + 4
 
 
-#: Раз в сколько кадров глаз моргает и сколько кадров держится закрытым.
-#: Дашборд обновляется примерно восемь раз в секунду, поэтому 82 кадра —
-#: это около десяти секунд, а три кадра — примерно треть секунды.
+#: Раз в сколько кадров глаз моргает. Дашборд обновляется примерно восемь раз
+#: в секунду, поэтому 82 кадра — это около десяти секунд.
 BLINK_PERIOD = 82
-BLINK_FRAMES = 3
+#: Кадров в самом моргании: веки сходятся, смыкаются и расходятся обратно.
+BLINK_FRAMES = len(logo.BLINK)
 
 
 def blinking(tick: int) -> bool:
     return tick % BLINK_PERIOD < BLINK_FRAMES
 
 
+def _frame(tick: int) -> tuple[str, ...]:
+    phase = tick % BLINK_PERIOD
+    return logo.BLINK[phase] if phase < BLINK_FRAMES else logo.LOGO
+
+
 def mark_lines(tick: int = 0) -> list[Text]:
     """Значок из logo.png: пиксель-арт полублоками, в цветах надписи."""
-    matrix = logo.BLINK if blinking(tick) else logo.LOGO
+    matrix = _frame(tick)
     rows: list[Text] = []
     for index in range(MARK_HEIGHT):
         top = matrix[index * 2]
@@ -165,11 +170,11 @@ def subtitle(width: int = 120, *, with_name: bool = False) -> Text:
 
 
 def art_height(width: int, *, compact: bool = False) -> int:
-    """Сколько строк займёт логотип. Нужно, чтобы отвести под шапку место."""
+    """Сколько строк займёт логотип вместе с отступом под ним."""
     if compact:
         return 0
     lines = art_lines(width)
-    return len(lines) if lines else 0
+    return len(lines) + 1 if lines else 0
 
 
 def render(width: int, *, compact: bool = False, tick: int = 0) -> Group:
@@ -181,7 +186,9 @@ def render(width: int, *, compact: bool = False, tick: int = 0) -> Group:
         return Group(Align.center(subtitle(width, with_name=True), width=width))
 
     lines = art_lines(width, tick)
-    parts = [Align.center(line, width=width) for line in lines]
+    parts: list[object] = [Align.center(line, width=width) for line in lines]
+    # Пустая строка между надписью и подписью: вплотную они выглядят сжато.
+    parts.append(Text())
     parts.append(_place_subtitle(width, art, subtitle(width)))
     return Group(*parts)
 

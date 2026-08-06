@@ -72,13 +72,34 @@ def run() -> bool:
     report.check("значок высотой с надпись",
                  len(banner.mark_lines()) == len(banner.BIG),
                  f"-> {len(banner.mark_lines())} и {len(banner.BIG)}")
-    report.check("матрица моргания того же размера",
-                 len(logo.BLINK) == len(logo.LOGO)
-                 and all(len(r) == logo.WIDTH for r in logo.BLINK))
-    report.check("закрытый глаз отличается от открытого", logo.BLINK != logo.LOGO)
-    report.check("при моргании закрашенных клеток меньше",
-                 sum(r.count("#") for r in logo.BLINK)
-                 < sum(r.count("#") for r in logo.LOGO))
+    report.check("ширина как у иконки: глаз в консоли и на значке одинаковый",
+                 logo.WIDTH == 22, f"-> {logo.WIDTH}")
+    report.check("все кадры моргания того же размера",
+                 all(len(f) == len(logo.LOGO) and all(len(r) == logo.WIDTH for r in f)
+                     for f in logo.BLINK))
+    report.check("кадров моргания несколько", len(logo.BLINK) >= 3,
+                 f"-> {len(logo.BLINK)}")
+
+    def ink_rows(frame):
+        """Номера строк, где глаз (без украшений) закрашен."""
+        return [i for i, row in enumerate(frame[:10]) if "#" in row]
+
+    open_rows = ink_rows(logo.LOGO)
+    shut_rows = ink_rows(logo.BLINK[len(logo.BLINK) // 2])
+    report.check("в середине моргания глаз сомкнут в узкую щель",
+                 len(shut_rows) < len(open_rows) / 3,
+                 f"-> строк {len(shut_rows)} против {len(open_rows)}")
+    report.check("щель приходится на середину глаза, а не на край",
+                 min(open_rows) < shut_rows[0] < max(open_rows),
+                 f"-> щель на строке {shut_rows[0]}, глаз {min(open_rows)}..{max(open_rows)}")
+
+    half = ink_rows(logo.BLINK[0])
+    report.check("веки идут навстречу: сначала щель шире, потом уже",
+                 len(half) > len(shut_rows), f"-> {len(half)} и {len(shut_rows)}")
+    report.check("моргание симметрично: последний кадр как первый",
+                 logo.BLINK[0] == logo.BLINK[-1])
+    report.check("украшения под глазом не двигаются",
+                 all(f[10:] == logo.LOGO[10:] for f in logo.BLINK))
 
     open_frames = [t for t in range(banner.BLINK_PERIOD) if not banner.blinking(t)]
     report.check("моргание редкое, глаз почти всегда открыт",

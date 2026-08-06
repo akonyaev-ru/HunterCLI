@@ -39,13 +39,19 @@ MATRIX_MODULE = os.path.join(ROOT, "huntercli", "logo.py")
 #: есть: чем больше клеток, тем чище край при уменьшении.
 COLS, ROWS = 22, 14
 
-#: Сетка для консоли меньше: строки рисуются полублоками, поэтому 12 строк
-#: матрицы дают 6 строк экрана — ровно высота надписи HUNTER CLI.
-CONSOLE_COLS, CONSOLE_ROWS = 19, 12
+#: Сетка для консоли: 12 строк полублоками дают 6 строк экрана, ровно высоту
+#: надписи HUNTER CLI. Ширина оставлена как в иконке, чтобы глаз в консоли и
+#: глаз на значке выглядели одинаково: сжимаем только по вертикали.
+CONSOLE_COLS, CONSOLE_ROWS = 22, 12
 
 #: Строки матрицы, занятые самим глазом. Ниже идут мелкие украшения, которые
 #: при моргании остаются на месте.
 EYE_ROWS = 10
+
+#: Насколько глаз прикрыт в каждом кадре моргания: 0 — открыт, 1 — закрыт.
+#: Веки сходятся к середине и расходятся обратно. При восьми кадрах в секунду
+#: это примерно треть секунды, как настоящее моргание.
+BLINK_STAGES = (0.5, 1.0, 0.5)
 
 #: Мастер-картинка: 768 делится нацело на 16, 24, 32, 48, 64, 96, 128 и 256,
 #: поэтому для них уменьшение идёт усреднением по площади, без ряби.
@@ -97,30 +103,37 @@ def extract(cols: int, rows: int) -> list[str]:
     return matrix
 
 
-def blink_frame(matrix: list[str]) -> list[str]:
-    """Кадр моргания: глаз схлопывается в веко, украшения остаются.
+def blink_frame(matrix: list[str], closed: float) -> list[str]:
+    """Кадр моргания: оба века сходятся к середине глаза.
 
-    По каждому столбцу берём середину закрашенного участка и оставляем там
-    две клетки. Получается изогнутая линия закрытого века, повторяющая форму
-    глаза, а не просто прямая черта.
+    Глаз сжимается по вертикали к своей середине, а не схлопывается в линию
+    по столбцам: верхнее веко идёт вниз, нижнее навстречу ему вверх. Именно
+    это читается как моргание. Украшения под глазом не двигаются.
     """
     cols = len(matrix[0])
     eye, tail = matrix[:EYE_ROWS], matrix[EYE_ROWS:]
+    filled = [(row, col) for row in range(EYE_ROWS) for col in range(cols)
+              if eye[row][col] == "#"]
+    if not filled:
+        return list(matrix)
+
+    middle = (min(r for r, _ in filled) + max(r for r, _ in filled)) / 2
+    scale = 1.0 - closed
     grid = [["."] * cols for _ in range(EYE_ROWS)]
-    for col in range(cols):
-        filled = [row for row in range(EYE_ROWS) if eye[row][col] == "#"]
-        if not filled:
-            continue
-        middle = (min(filled) + max(filled)) // 2
-        grid[middle][col] = "#"
-        if middle + 1 < EYE_ROWS:
-            grid[middle + 1][col] = "#"
+    for row, col in filled:
+        target = int(round(middle + (row - middle) * scale))
+        if 0 <= target < EYE_ROWS:
+            grid[target][col] = "#"
     return ["".join(row) for row in grid] + list(tail)
 
 
-def write_matrix(open_eye: list[str], closed_eye: list[str]) -> None:
-    def block(rows: list[str]) -> str:
-        return "\n".join(f'    "{row}",' for row in rows)
+def write_matrix(open_eye: list[str], frames: list[list[str]]) -> None:
+    def block(rows: list[str], indent: str = "    ") -> str:
+        return "\n".join(f'{indent}"{row}",' for row in rows)
+
+    animation = "\n".join(
+        f"    (\n{block(frame, '        ')}\n    )," for frame in frames
+    )
 
     text = f'''"""Логотип в виде матрицы. Файл создаётся tools/make_icon.py — не править.
 
@@ -128,7 +141,8 @@ def write_matrix(open_eye: list[str], closed_eye: list[str]) -> None:
 рисуются полублоками, поэтому две строки матрицы занимают одну строку экрана:
 пиксели получаются квадратными, а высота совпадает с надписью HUNTER CLI.
 
-BLINK — тот же глаз с закрытым веком, показывается на доли секунды.
+BLINK — кадры моргания по порядку: веки сходятся к середине глаза и
+расходятся обратно.
 """
 
 WIDTH = {CONSOLE_COLS}
@@ -139,7 +153,7 @@ LOGO = (
 )
 
 BLINK = (
-{block(closed_eye)}
+{animation}
 )
 '''
     io.open(MATRIX_MODULE, "w", encoding="utf-8", newline="\n").write(text)
@@ -169,9 +183,10 @@ def main() -> int:
         return 1
 
     console = extract(CONSOLE_COLS, CONSOLE_ROWS)
-    write_matrix(console, blink_frame(console))
+    frames = [blink_frame(console, stage) for stage in BLINK_STAGES]
+    write_matrix(console, frames)
     print(f"Матрица для консоли: {MATRIX_MODULE} "
-          f"({CONSOLE_COLS}x{CONSOLE_ROWS}, плюс кадр моргания)")
+          f"({CONSOLE_COLS}x{CONSOLE_ROWS}, кадров моргания {len(frames)})")
 
     detailed = extract(COLS, ROWS)
     master = render_master(detailed)

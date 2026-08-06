@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ctypes
 import os
 import sys
 import time
@@ -10,7 +9,7 @@ import time
 from rich.console import Console
 from rich.live import Live
 
-from . import __version__, config, paths
+from . import __version__, config, paths, winconsole
 from .engine import BumpEngine, Phase
 from .hh import HHClient
 from .logbus import LogBus
@@ -94,11 +93,10 @@ class HunterApp:
         return code
 
     def _prepare_console(self) -> None:
-        if sys.platform == "win32":
-            try:
-                ctypes.windll.kernel32.SetConsoleTitleW(f"Hunter CLI {__version__}")
-            except Exception:
-                pass
+        winconsole.set_title(f"Hunter CLI {__version__}")
+        # Значок берёт классическое окно консоли. Windows Terminal показывает
+        # свой и менять его не даёт — это его устройство, не наша недоработка.
+        winconsole.set_console_icon()
 
     # ------------------------------------------------------------- сеанс
 
