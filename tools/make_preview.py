@@ -48,12 +48,16 @@ from huntercli.ui.theme import THEME
 
 #: Размер терминала в символах. Подобран так, чтобы поместился полный логотип
 #: (74 колонки) и осталось место на таблицу с журналом.
-#: Высота не меньше 30 строк: ниже этого дашборд прячет логотип и рисует
-#: сжатую шапку — для картинки в README нужен полный вид.
+#: Размер картинки фиксирован. Ширина и высота окна из него вычитаются, а не
+#: наоборот: так размер не «уплывает» при правках интерфейса.
+CANVAS_W, CANVAS_H = 1600, 1000
+
+#: Размер терминала подобран под этот холст. Ограничения снизу: от 103 колонок
+#: рядом с надписью помещается значок, от 32 строк панель статуса показывает
+#: обратный отсчёт, а названия резюме перестают обрезаться. Больше брать
+#: некуда: окно должно оставить поля на холсте.
 COLUMNS, ROWS = 112, 32
 
-#: Поля вокруг окна: окно должно «лежать» на фоне, а не упираться в края.
-MARGIN_X, MARGIN_TOP, MARGIN_BOTTOM = 210, 160, 190
 CORNER = 12
 
 #: Запас снизу. Rich оставляет под содержимым всего 8 px (сверху — 40 px под
@@ -172,12 +176,14 @@ def render_terminal() -> tuple[str, float, float]:
 
 
 def canvas_size(inner_w: float, inner_h: float) -> tuple[int, int]:
-    """Размер картинки. Считается здесь и только здесь: если растеризовать
-    по другой формуле, край изображения окажется обрезанным."""
-    return (
-        int(inner_w + MARGIN_X * 2),
-        int(inner_h + BOTTOM_PAD + MARGIN_TOP + MARGIN_BOTTOM),
-    )
+    """Размер картинки. Фиксирован, но проверяем, что окно в него влезает."""
+    win_w, win_h = inner_w, inner_h + BOTTOM_PAD
+    if win_w > CANVAS_W - 80 or win_h > CANVAS_H - 60:
+        raise RuntimeError(
+            f"окно {win_w:.0f}x{win_h:.0f} не помещается в холст "
+            f"{CANVAS_W}x{CANVAS_H}: уменьшите COLUMNS/ROWS"
+        )
+    return CANVAS_W, CANVAS_H
 
 
 def silk(canvas_w: float, canvas_h: float) -> str:
@@ -217,7 +223,7 @@ def compose(terminal: str, inner_w: float, inner_h: float) -> str:
     """Обернуть терминал в окно и положить на фон."""
     win_w, win_h = inner_w, inner_h + BOTTOM_PAD
     canvas_w, canvas_h = canvas_size(inner_w, inner_h)
-    win_x, win_y = MARGIN_X, MARGIN_TOP
+    win_x, win_y = (canvas_w - win_w) / 2, (canvas_h - win_h) / 2
     waves = silk(canvas_w, canvas_h)
 
     # Заголовок окна занимает верхнюю полосу: Rich уже оставил под неё отступ

@@ -235,6 +235,7 @@ class Dashboard:
     def _status_panel(self, snap: Snapshot, height: int, width: int) -> RenderableType:
         inner = max(8, width - 4)
         head = self._phase_head(snap, inner)
+        head_rows = 2 if snap.detail else 1
 
         grid = Table.grid(padding=(0, 1), expand=True)
         grid.add_column(style=MUTED, no_wrap=True)
@@ -266,9 +267,16 @@ class Dashboard:
 
         parts: list[RenderableType] = [head, Text(), grid]
 
+        # Считаем строки честно: панель обрезает молча, и обратный отсчёт
+        # рискует потерять полосу прогресса, оставив висеть одну подпись.
+        budget = max(3, height - 2)          # минус рамка панели
+        used = head_rows + 1 + grid.row_count
         countdown = self._countdown(snap, inner)
-        if countdown is not None and height >= 12:
-            parts.extend([Text(), countdown])
+        if countdown is not None:
+            if used + 3 <= budget:           # пустая строка плюс две строки
+                parts.extend([Text(), countdown])
+            elif used + 2 <= budget:         # впритык, без пустой строки
+                parts.append(countdown)
 
         hot = snap.phase in (Phase.BUMPING, Phase.AUTH)
         return _panel(Group(*parts), "СТАТУС", hot=hot)
@@ -401,6 +409,10 @@ class Dashboard:
         log_size = 10 if height >= 34 else (8 if height >= 28 else 6)
         wide = width >= 92
 
+        # Сколько строк реально достанется телу: панели считают по этому
+        # числу, и ошибиться нельзя — лишнее они обрежут молча.
+        body_height = max(3, height - header_size - log_size - 2)
+
         root = Layout(name="root")
         root.split_column(
             Layout(name="header", size=header_size),
@@ -413,7 +425,7 @@ class Dashboard:
         root["header"].update(self._header(snap, width, tall_header))
 
         if self.show_help:
-            root["body"].update(self._help_panel(height - header_size - log_size - 2))
+            root["body"].update(self._help_panel(body_height))
         elif wide:
             side_width = 34 if width >= 108 else 30
             root["body"].split_row(
@@ -424,7 +436,7 @@ class Dashboard:
                 _panel(self._resume_table(snap, width - side_width - 4), "РЕЗЮМЕ")
             )
             root["body"]["side"].update(
-                self._status_panel(snap, height - header_size - log_size, side_width)
+                self._status_panel(snap, body_height, side_width)
             )
         else:
             root["body"].split_column(
