@@ -14,7 +14,7 @@ from rich.table import Table
 from rich.text import Text
 
 from .. import auth, hh
-from ..config import Config
+from ..config import Account
 from ..logbus import LogBus
 from . import banner
 from .theme import ACCENT, ACCENT_SOFT, COOL, ERR, FRAME, FRAME_HOT, MUTED, OK, WARN, human_span
@@ -67,6 +67,8 @@ def welcome(console: Console) -> None:
         Text("Для работы нужно один раз войти в свой аккаунт.", style="white"),
         Text("Пароль программа не видит и не хранит — вход идёт на самом сайте,", style=MUTED),
         Text("а сохраняется только токен доступа.", style=MUTED),
+        Text(),
+        Text("Аккаунтов можно подключить несколько: каждый на своей вкладке.", style=MUTED),
     )
     _shell(console, body, "ЗНАКОМСТВО")
     _ask(
@@ -80,7 +82,7 @@ def welcome(console: Console) -> None:
 # ------------------------------------------------------------------- вход
 
 
-def _methods_table() -> Table:
+def _methods_table(cancel: str) -> Table:
     table = Table.grid(padding=(0, 2))
     table.add_column(style=f"bold {ACCENT_SOFT}", justify="right", width=3)
     table.add_column()
@@ -90,12 +92,19 @@ def _methods_table() -> Table:
     table.add_row("", Text("Если окно из пункта 1 не открылось или не работает.", style=MUTED))
     table.add_row("3", Text("Вставить ссылку или токен вручную", style="white"))
     table.add_row("", Text("Запасной вариант, когда всё остальное не сработало.", style=MUTED))
-    table.add_row("0", Text("Выйти из программы", style=MUTED))
+    table.add_row("0", Text(cancel, style=MUTED))
     return table
 
 
-def authorize(console: Console, log: LogBus, cfg: Config, reason: str = "") -> bool:
-    """Провести пользователя через вход. True, если токен получен."""
+def authorize(
+    console: Console,
+    log: LogBus,
+    account: Account,
+    reason: str = "",
+    *,
+    cancel: str = "Выйти из программы",
+) -> bool:
+    """Провести пользователя через вход в аккаунт. True, если токен получен."""
     while True:
         body_parts: list[object] = []
         if reason:
@@ -104,7 +113,7 @@ def authorize(console: Console, log: LogBus, cfg: Config, reason: str = "") -> b
             [
                 Text("Выберите способ входа:", style="white"),
                 Text(),
-                _methods_table(),
+                _methods_table(cancel),
             ]
         )
         _shell(console, Group(*body_parts), "ВХОД В АККАУНТ", hot=True)
@@ -123,7 +132,7 @@ def authorize(console: Console, log: LogBus, cfg: Config, reason: str = "") -> b
 
         try:
             if choice == "1":
-                payload = _via_webview(console, log)
+                payload = _via_webview(console, log, account.uid)
             elif choice == "2":
                 payload = _via_browser(console, log)
             else:
@@ -136,9 +145,11 @@ def authorize(console: Console, log: LogBus, cfg: Config, reason: str = "") -> b
             reason = "" if payload else "Вход не завершён — попробуйте другой способ."
 
         if payload:
-            cfg.apply_token(payload)
-            cfg.account = ""
-            cfg.save()
+            account.apply_token(payload)
+            # Имя и владельца выясним заново: вход мог быть и в другой аккаунт.
+            account.name = ""
+            account.person_id = ""
+            account.save()
             log.ok("Авторизация пройдена, токен сохранён")
             console.print(f"[{OK}]✓ Готово. Токен получен и сохранён.[/]")
             time.sleep(1.2)
@@ -148,7 +159,7 @@ def authorize(console: Console, log: LogBus, cfg: Config, reason: str = "") -> b
         time.sleep(1.5)
 
 
-def _via_webview(console: Console, log: LogBus) -> dict | None:
+def _via_webview(console: Console, log: LogBus, uid: str = "") -> dict | None:
     available, error = auth.webview_available()
     if not available:
         raise auth.AuthError(f"встроенное окно недоступно ({error}). Выберите пункт 2 или 3")
@@ -166,7 +177,7 @@ def _via_webview(console: Console, log: LogBus) -> dict | None:
         console.print(f"[{COOL}]  › {message}[/]")
         log.step(message)
 
-    return auth.run_webview_flow(status)
+    return auth.run_webview_flow(status, uid=uid)
 
 
 def _via_browser(console: Console, log: LogBus) -> dict | None:
@@ -182,6 +193,8 @@ def _via_browser(console: Console, log: LogBus) -> dict | None:
     url = auth.build_auth_url()
     console.print()
     console.print(f"[{ACCENT}]Открываю браузер. Войдите в аккаунт и нажмите «Продолжить».[/]")
+    console.print(f"[{MUTED}]Если в браузере уже открыт другой аккаунт, вход пройдёт в него:[/]")
+    console.print(f"[{MUTED}]для второго аккаунта надёжнее пункт 1 или приватное окно.[/]")
     console.print(f"[{MUTED}]Если браузер не открылся, скопируйте ссылку вручную:[/]")
     console.print(f"[{COOL}]{url}[/]")
     console.print()

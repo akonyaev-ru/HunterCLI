@@ -90,14 +90,14 @@ def run() -> bool:
     from huntercli.engine import PHASE_LABEL
     from huntercli.hh import _ERROR_HINTS
     from huntercli.ui.banner import subtitle
-    from huntercli.ui.dashboard import HELP_SECTIONS, HOTKEYS
+    from huntercli.ui.dashboard import HELP_SECTIONS, HOTKEYS, TAB_HOTKEYS
 
     line = subtitle(120, with_name=True).plain
     report.check("подпись под логотипом чистая", "hh" not in line.lower(), f"-> {line!r}")
     report.check("названия состояний чистые",
                  not any("hh" in v.lower() for v in PHASE_LABEL.values()))
     report.check("подсказки по клавишам чистые",
-                 not any("hh" in label.lower() for _, label in HOTKEYS))
+                 not any("hh" in label.lower() for _, label in HOTKEYS + TAB_HOTKEYS))
     help_lines = [text for _, rows, _ in HELP_SECTIONS for _, text in rows]
     help_lines += [title for title, _, _ in HELP_SECTIONS]
     report.check("справка чистая", not any("hh.ru" in text for text in help_lines))

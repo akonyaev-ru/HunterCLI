@@ -60,9 +60,9 @@ def run() -> bool:
 
     report.section("api.hh.ru с негодным токеном")
     log = LogBus(to_file=False)
-    cfg = Config()
-    cfg.apply_token({"access_token": "DEFINITELY-NOT-VALID-0123456789", "expires_in": 1209599})
-    report.raises("негодный токен -> TokenError", hh.TokenError, hh.HHClient(cfg, log).resumes)
+    account = Config().account
+    account.apply_token({"access_token": "DEFINITELY-NOT-VALID-0123456789", "expires_in": 1209599})
+    report.raises("негодный токен -> TokenError", hh.TokenError, hh.HHClient(account, log).resumes)
 
     report.section("Обмен неверного кода")
     report.raises("неверный код -> AuthError", auth.AuthError,

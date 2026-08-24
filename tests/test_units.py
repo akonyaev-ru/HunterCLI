@@ -128,31 +128,34 @@ def run() -> bool:
 
     report.section("Конфиг: сохранение и чтение")
     cfg = Config()
-    cfg.apply_token({"access_token": "AT-1", "refresh_token": "RT-1", "expires_in": 1209599})
-    cfg.account = "Иван"
-    cfg.settings.managed_resumes = ["111"]
-    cfg.stats.record_bump("Тестовое резюме", time.time())
+    account = cfg.account
+    account.apply_token({"access_token": "AT-1", "refresh_token": "RT-1", "expires_in": 1209599})
+    account.name = "Иван"
+    account.managed_resumes = ["111"]
+    account.stats.record_bump("Тестовое резюме", time.time())
     cfg.save()
 
     loaded = config_mod.load()
-    report.check("токен пережил сохранение", loaded.access_token == "AT-1")
-    report.check("refresh пережил сохранение", loaded.refresh_token == "RT-1")
-    report.check("имя аккаунта сохранено", loaded.account == "Иван")
-    report.check("выбор резюме сохранён", loaded.settings.managed_resumes == ["111"])
-    report.check("статистика сохранена", loaded.stats.total_bumps == 1)
-    report.check("свежий токен не просит обновления", not loaded.needs_refresh)
+    report.check("токен пережил сохранение", loaded.account.access_token == "AT-1")
+    report.check("refresh пережил сохранение", loaded.account.refresh_token == "RT-1")
+    report.check("имя аккаунта сохранено", loaded.account.name == "Иван")
+    report.check("выбор резюме сохранён", loaded.account.managed_resumes == ["111"])
+    report.check("статистика сохранена", loaded.account.stats.total_bumps == 1)
+    report.check("свежий токен не просит обновления", not loaded.account.needs_refresh)
     report.check("на диске нет открытого токена",
                  "AT-1" not in open(config_path(), encoding="utf-8").read())
 
-    cfg.expires_at = time.time() + 3600
-    report.check("токен на исходе просит обновления", cfg.needs_refresh)
+    account.expires_at = time.time() + 3600
+    report.check("токен на исходе просит обновления", account.needs_refresh)
 
     report.section("Конфиг: миграция с версии 1")
     with open(config_path(), "w", encoding="utf-8") as fh:
         json.dump({"token": "Bearer LEGACY123", "resume_id": "999"}, fh)
     migrated = config_mod.load()
-    report.check("старый токен подхвачен без слова Bearer", migrated.access_token == "LEGACY123")
-    report.check("старый resume_id стал списком", migrated.settings.managed_resumes == ["999"])
+    report.check("старый токен подхвачен без слова Bearer",
+                 migrated.account.access_token == "LEGACY123")
+    report.check("старый resume_id стал списком",
+                 migrated.account.managed_resumes == ["999"])
 
     with open(config_path(), "w", encoding="utf-8") as fh:
         fh.write("{это не json")
@@ -186,7 +189,7 @@ def run() -> bool:
         report.check("рядом с программой пусто", not os.listdir(program),
                      f"-> {os.listdir(program)}")
         report.check("настройки не потерялись при переезде",
-                     config_mod.load().account == "Старый")
+                     config_mod.load().account.name == "Старый")
 
         # Второй переезд поверх уже существующих настроек: свежее не затираем,
         # но старое рядом с программой всё равно убираем.
@@ -195,7 +198,7 @@ def run() -> bool:
         again = paths_mod.adopt_legacy_files()
         report.check("повторный переезд ничего не перенёс", again == [], f"-> {again}")
         report.check("рядом с программой снова пусто", not os.listdir(program))
-        report.check("свежие настройки уцелели", config_mod.load().account == "Старый")
+        report.check("свежие настройки уцелели", config_mod.load().account.name == "Старый")
 
         os.remove(paths_mod.config_path())
         report.check("без старых файлов переезд молчит", paths_mod.adopt_legacy_files() == [])
@@ -250,7 +253,7 @@ def run() -> bool:
                  Settings().prevent_sleep and Settings().wake_from_sleep)
 
     report.section("Планирование поднятий")
-    engine = BumpEngine(Config(), None, LogBus(to_file=False))
+    engine = BumpEngine(Config().account, None, LogBus(to_file=False))
     now = datetime.now(timezone.utc)
     engine._resumes = [
         Resume(id="a", title="Можно сейчас", can_publish=True,
@@ -278,7 +281,7 @@ def run() -> bool:
     report.check("после отказа выдерживаем паузу",
                  engine._resumes[0].planned_at - time.time() > 1700)
 
-    engine.cfg.settings.managed_resumes = ["b"]
+    engine.account.managed_resumes = ["b"]
     engine._replan_locked()
     report.check("выключенное резюме не планируется", engine._resumes[0].planned_at is None)
 

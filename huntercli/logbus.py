@@ -32,6 +32,41 @@ class Entry:
         return time.strftime("%H:%M:%S", time.localtime(self.at))
 
 
+class TaggedLog:
+    """Тот же журнал, но каждая запись подписана аккаунтом.
+
+    Пока аккаунт один, подпись пустая и записи выглядят ровно как раньше.
+    Подпись умеет быть функцией: имя владельца аккаунта становится известно
+    только после первой синхронизации, а писать в журнал начинают раньше.
+    """
+
+    def __init__(self, bus: "LogBus", tag: "str | object" = "") -> None:
+        self._bus = bus
+        self.tag = tag
+
+    def _prefix(self) -> str:
+        tag = self.tag() if callable(self.tag) else self.tag
+        return f"{tag} · " if tag else ""
+
+    def add(self, level: str, text: str) -> None:
+        self._bus.add(level, self._prefix() + text)
+
+    def ok(self, text: str) -> None:
+        self.add(OK, text)
+
+    def info(self, text: str) -> None:
+        self.add(INFO, text)
+
+    def step(self, text: str) -> None:
+        self.add(STEP, text)
+
+    def warn(self, text: str) -> None:
+        self.add(WARN, text)
+
+    def error(self, text: str) -> None:
+        self.add(ERROR, text)
+
+
 class LogBus:
     """Потокобезопасный журнал. Пишет в файл и хранит хвост для дашборда."""
 

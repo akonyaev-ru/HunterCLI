@@ -4,6 +4,14 @@ from __future__ import annotations
 
 import sys
 
+#: Shift+Tab своего символа не имеет. Называем его так же, как обычный
+#: терминал: приложению удобнее сравнивать с одной строкой, а не с кодами.
+SHIFT_TAB = "\x1b[Z"
+
+#: Клавиши без символа msvcrt отдаёт двумя вызовами: сначала префикс, следом
+#: код. Что не в этом списке — гасим, как и раньше.
+_EXTENDED = {"\x0f": SHIFT_TAB}
+
 
 class KeyReader:
     """Читает одиночные нажатия, не блокируя цикл отрисовки.
@@ -64,9 +72,8 @@ class KeyReader:
         if not self._msvcrt.kbhit():
             return None
         char = self._msvcrt.getwch()
-        if char in ("\x00", "\xe0"):  # функциональная клавиша — гасим хвост
-            self._msvcrt.getwch()
-            return None
+        if char in ("\x00", "\xe0"):  # функциональная клавиша: код идёт следом
+            return _EXTENDED.get(self._msvcrt.getwch())
         return char
 
     def _poll_posix(self) -> str | None:  # pragma: no cover - не Windows
