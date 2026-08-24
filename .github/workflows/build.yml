@@ -77,6 +77,11 @@ jobs:
             exit 1
           }
           Write-Host 'OK: executable starts and pywebview is bundled'
+          # Шаг обязан завершиться нулём. Иначе GitHub возьмёт код возврата
+          # последней внешней команды — а `--check` отвечает единицей всякий
+          # раз, когда на раннере нет доступа к сервису. Проверка про упаковку
+          # .exe, а не про сеть в дата-центре GitHub.
+          exit 0
 
       - name: Archive build
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
