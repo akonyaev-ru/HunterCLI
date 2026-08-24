@@ -601,13 +601,15 @@ class Dashboard:
         return name
 
     def _tab_chunk(self, line: Text, chunk: str, tab: TabInfo, *, current: bool) -> None:
-        if current:
-            # Открытая вкладка — плашкой: на неё смотрят первой.
-            line.append(chunk, style="bold white on " + FRAME_HOT)
-            return
-        line.append(chunk[:1], style=MUTED)
+        """Открытая вкладка — белым, остальные серым, без цветных плашек.
+
+        Значок состояния красится по фазе у всех вкладок: по нему видно, чем
+        занят аккаунт, на который сейчас не смотрят.
+        """
+        body = "bold white" if current else MUTED
+        line.append(chunk[:1], style=body)
         line.append(chunk[1:2], style=PHASE_STYLE.get(tab.phase, ACCENT))
-        line.append(chunk[2:], style=MUTED)
+        line.append(chunk[2:], style=body)
 
     def _tabs_line(self, tabs: list[TabInfo], active: int, width: int) -> Text:
         """Полоса вкладок. Открытая обязана в неё попасть, остальные — как выйдет."""
