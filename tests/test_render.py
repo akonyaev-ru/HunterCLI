@@ -22,7 +22,7 @@ from huntercli.engine import Phase, Snapshot
 from huntercli.hh import Resume
 from huntercli.logbus import LogBus
 from huntercli.ui.dashboard import Dashboard, TabInfo
-from huntercli.ui.theme import THEME
+from huntercli.ui.theme import MUTED, THEME
 
 #: Ряд намеренно доходит до минимума, который принимает app.py (58x14):
 #: именно на маленьких окнах вёрстка и разъезжается.
@@ -228,6 +228,17 @@ def run() -> bool:
     lonely = _render(lambda b: None, snap, log, 120, 40, _tabs(1), 0)
     report.check("с одним аккаунтом полосы вкладок нет", "● 1 " not in lonely)
     report.check("и про переключение вкладок не сказано", "вкладка" not in lonely)
+    # Цвета вкладок задаются намеренно: открытая белая, остальные серые,
+    # цветных плашек нет — они спорят с рамками панелей.
+    plain = Console(theme=THEME, highlight=False, file=io.StringIO(), width=100,
+                    force_terminal=True, color_system="truecolor", legacy_windows=False)
+    strip = Dashboard(plain, log)._tabs_line(_tabs(3), 1, 100)
+    styles = [str(span.style) for span in strip.spans]
+    report.check("у вкладок нет цветной плашки",
+                 not [style for style in styles if " on " in style], f"-> {styles}")
+    report.check("открытая вкладка белая", "bold white" in styles, f"-> {styles}")
+    report.check("остальные серые", MUTED in styles, f"-> {styles}")
+
     crowd = _render(lambda b: None, snap, log, 120, 40, _tabs(5), 4)
     report.check("подсказка о вкладках появляется вместе с ними", "вкладка" in crowd)
     report.check("вкладки, которые не влезли, посчитаны", "+1" in crowd or "● 1 " in crowd)
