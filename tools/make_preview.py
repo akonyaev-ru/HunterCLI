@@ -8,8 +8,8 @@
 его своим шрифтом. Ширины символов при этом разъезжаются, а блочный логотип
 покрывается швами. Растр выглядит одинаково у всех.
 
-Для перевода в PNG нужен Microsoft Edge (есть на любой Windows). Если его нет,
-рядом останется docs/preview.svg — им можно воспользоваться как есть.
+Для перевода в PNG нужен безголовый браузер — Edge или Chrome. Если ни одного
+нет, рядом останется docs/preview.svg — им можно воспользоваться как есть.
 
 Запуск: python tools\\make_preview.py
 """
@@ -46,7 +46,7 @@ from huntercli.engine import Phase, Snapshot
 from huntercli.hh import Resume
 from huntercli.logbus import LogBus
 from huntercli.ui import banner
-from huntercli.ui.dashboard import Dashboard
+from huntercli.ui.dashboard import Dashboard, TabInfo
 from huntercli.ui.theme import THEME
 
 #: Размер терминала в символах. Подобран так, чтобы поместился полный логотип
@@ -57,9 +57,10 @@ CANVAS_W, CANVAS_H = 1600, 1000
 
 #: Размер терминала подобран под этот холст. Ограничения снизу: от 103 колонок
 #: рядом с надписью помещается значок, от 32 строк панель статуса показывает
-#: обратный отсчёт, а названия резюме перестают обрезаться. Больше брать
-#: некуда: окно должно оставить поля на холсте.
-COLUMNS, ROWS = 112, 32
+#: обратный отсчёт, а названия резюме перестают обрезаться. Ещё одна строка
+#: уходит под полосу вкладок — на картинке аккаунта два. Больше брать некуда:
+#: окно должно оставить поля на холсте.
+COLUMNS, ROWS = 112, 33
 
 CORNER = 12
 
@@ -77,9 +78,15 @@ OUTPUT_SVG = os.path.join(ROOT, "docs", "preview.svg")
 FONT_STACK = '"Cascadia Mono", "Cascadia Code", Consolas, monospace'
 FONT_ASPECT = 0.5859
 
-EDGE_PATHS = (
+#: Чем переводить SVG в PNG. Edge стоит на любой Windows, поэтому он первый,
+#: Chrome — запасной. Перебор нужен не для красоты: у Edge 151 ключ
+#: --screenshot молча ничего не делает (проверено 2026-08-24 — код возврата
+#: нулевой, stderr пустой, файла нет), а Chrome ту же команду выполняет.
+BROWSER_PATHS = (
     r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
     r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
 )
 
 #: Шаблон без «хрома» Rich: рамку рисуем свою, чтобы окно выглядело как
@@ -111,13 +118,26 @@ BARE_SVG = """\
 
 
 def build_log() -> LogBus:
+    """Журнал как при двух аккаунтах: записи подписаны их владельцами.
+
+    Без подписи остаётся только строка запуска — она общая для программы,
+    ровно так это выглядит и в жизни.
+    """
     log = LogBus(to_file=False)
     log.info(f"{APP_NAME} запущен")
-    log.step("Синхронизация: резюме — 3, под автопилотом — 2")
-    log.ok("«Ведущий юрист по корпоративному праву» поднято в поиске")
-    log.ok("«Руководитель юридического департамента» поднято в поиске")
-    log.step("Токен доступа обновлён автоматически")
+    log.step("Алексей К. · Синхронизация: резюме — 3, под автопилотом — 2")
+    log.ok("Алексей К. · «Ведущий юрист по корпоративному праву» поднято в поиске")
+    log.ok("Мария С. · «Финансовый аналитик» поднято в поиске")
+    log.step("Мария С. · Токен доступа обновлён автоматически")
     return log
+
+
+def build_tabs() -> list[TabInfo]:
+    """Две вкладки: открытая ждёт своего времени, соседняя как раз поднимает."""
+    return [
+        TabInfo("Алексей К.", Phase.WAITING),
+        TabInfo("Мария С.", Phase.BUMPING),
+    ]
 
 
 def build_snapshot() -> Snapshot:
@@ -160,7 +180,7 @@ def render_terminal() -> tuple[str, float, float]:
     # Кадр заведомо вне моргания: на статичной картинке глаз должен быть открыт.
     board.tick = 20
     assert not banner.blinking(board.tick), "выбран кадр с закрытым глазом"
-    console.print(board.render(build_snapshot()))
+    console.print(board.render(build_snapshot(), build_tabs(), 0))
 
     svg = console.export_svg(
         title="",
@@ -301,10 +321,14 @@ height="{canvas_h:.0f}" viewBox="0 0 {canvas_w:.0f} {canvas_h:.0f}">
 
 
 def rasterize(width: int, height: int) -> bool:
-    """Перевести готовый SVG в PNG через безголовый Edge."""
-    browser = next((path for path in EDGE_PATHS if os.path.exists(path)), None)
-    if not browser:
-        print("Microsoft Edge не найден — оставляю только SVG", file=sys.stderr)
+    """Перевести готовый SVG в PNG безголовым браузером.
+
+    Браузеры перебираются по очереди: молчаливый отказ (нулевой код возврата
+    и никакого файла) — тоже отказ, просто его не на что списать.
+    """
+    browsers = [path for path in BROWSER_PATHS if os.path.exists(path)]
+    if not browsers:
+        print("Ни Edge, ни Chrome не найдены — оставляю только SVG", file=sys.stderr)
         return False
 
     with tempfile.TemporaryDirectory() as work:
@@ -316,17 +340,21 @@ def rasterize(width: int, height: int) -> bool:
             '<body style="margin:0"><img src="preview.svg" '
             f'style="display:block;width:{width}px;height:{height}px"></body>'
         )
-        result = subprocess.run(
-            [browser, "--headless", "--disable-gpu", f"--screenshot={shot}",
-             f"--window-size={width},{height}", "--default-background-color=FFFFFFFF",
-             "--hide-scrollbars", f"file:///{page.replace(os.sep, '/')}"],
-            capture_output=True, timeout=180,
-        )
-        if not os.path.exists(shot):
-            print(f"Edge не отдал картинку: {result.stderr[:200]!r}", file=sys.stderr)
-            return False
-        shutil.copy(shot, OUTPUT_PNG)
-    return True
+        for browser in browsers:
+            if os.path.exists(shot):
+                os.remove(shot)
+            result = subprocess.run(
+                [browser, "--headless", "--disable-gpu", f"--screenshot={shot}",
+                 f"--window-size={width},{height}", "--default-background-color=FFFFFFFF",
+                 "--hide-scrollbars", f"file:///{page.replace(os.sep, '/')}"],
+                capture_output=True, timeout=180,
+            )
+            if os.path.exists(shot):
+                shutil.copy(shot, OUTPUT_PNG)
+                return True
+            print(f"{os.path.basename(browser)} картинку не отдал "
+                  f"(код {result.returncode}) — пробую следующий", file=sys.stderr)
+    return False
 
 
 def main() -> int:
