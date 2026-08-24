@@ -10,7 +10,7 @@ from typing import Any
 import requests
 
 from . import auth
-from .config import Config
+from .config import Account
 from .logbus import LogBus
 
 API_ROOT = "https://api.hh.ru"
@@ -155,8 +155,10 @@ def explain_errors(payload: dict[str, Any] | None) -> str:
 
 
 class HHClient:
-    def __init__(self, cfg: Config, log: LogBus) -> None:
-        self.cfg = cfg
+    """Клиент одного аккаунта: свой токен и своя сессия соединений."""
+
+    def __init__(self, account: Account, log: LogBus) -> None:
+        self.account = account
         self.log = log
         self.session = requests.Session()
         self.session.headers.update(
@@ -170,7 +172,7 @@ class HHClient:
     # ---------------------------------------------------------- транспорт
 
     def _auth_headers(self) -> dict[str, str]:
-        return {"Authorization": f"Bearer {self.cfg.access_token}"}
+        return {"Authorization": f"Bearer {self.account.access_token}"}
 
     def _check_token_usable(self) -> None:
         """HTTP-заголовки кодируются latin-1: битый токен ловим до запроса.
@@ -178,7 +180,7 @@ class HHClient:
         Иначе requests падает UnicodeEncodeError, и вместо понятного «войдите
         заново» пользователь видел бы бесконечную «внутреннюю ошибку».
         """
-        if not token_is_sendable(self.cfg.access_token):
+        if not token_is_sendable(self.account.access_token):
             raise TokenError("сохранённый токен испорчен")
 
     def _request(self, method: str, path: str, **kwargs: Any) -> requests.Response:
@@ -232,34 +234,39 @@ class HHClient:
     # -------------------------------------------------------------- токен
 
     def ensure_fresh_token(self) -> None:
-        if self.cfg.needs_refresh:
+        if self.account.needs_refresh:
             self.try_refresh()
 
     def try_refresh(self) -> bool:
-        if not self.cfg.refresh_token:
+        if not self.account.refresh_token:
             return False
         try:
-            payload = auth.refresh_token(self.cfg.refresh_token)
+            payload = auth.refresh_token(self.account.refresh_token)
         except auth.AuthError as exc:
             self.log.error(f"Не удалось обновить токен: {exc}")
             return False
-        self.cfg.apply_token(payload)
-        self.cfg.save()
+        self.account.apply_token(payload)
+        self.account.save()
         self.log.ok("Токен доступа обновлён автоматически")
         return True
 
     # --------------------------------------------------------------- API
 
-    def whoami(self) -> str:
+    def identity(self) -> tuple[str, str]:
+        """Кто владелец аккаунта: (идентификатор, имя). Пустые — не узнали.
+
+        Идентификатор нужен, чтобы не подключить один и тот же аккаунт дважды:
+        имя для этого не годится, полных тёзок никто не отменял.
+        """
         response = self._call("GET", "/me")
         if response.status_code != 200:
-            return ""
+            return "", ""
         data = _json_or_none(response) or {}
         name = " ".join(
             str(data.get(key) or "").strip()
             for key in ("first_name", "last_name")
         ).strip()
-        return name or str(data.get("email") or "")
+        return str(data.get("id") or ""), name or str(data.get("email") or "")
 
     def resumes(self) -> list[Resume]:
         response = self._call("GET", "/resumes/mine")

@@ -22,6 +22,7 @@ MODULES = [
     "test_auth",
     "test_webview_flow",
     "test_engine",
+    "test_accounts",
 ]
 
 

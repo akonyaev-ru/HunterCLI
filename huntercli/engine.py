@@ -8,10 +8,10 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from .config import Config
+from .config import Account
 from .hh import HHClient, HHError, NetworkError, Resume, TokenError
-from .logbus import LogBus
-from .power import SleepDetector, WakeTimer, keep_awake
+from .logbus import LogBus, TaggedLog
+from .power import SleepDetector, WakeTimer
 
 #: Минимальный интервал между обращениями к /resumes/mine, чтобы не долбить API.
 MIN_SYNC_GAP_SEC = 45
@@ -80,10 +80,25 @@ class Snapshot:
 
 
 class BumpEngine:
-    def __init__(self, cfg: Config, client: HHClient, log: LogBus) -> None:
-        self.cfg = cfg
+    """Автопилот одного аккаунта.
+
+    Аккаунтов может быть несколько — тогда рядом работает столько же движков,
+    у каждого свой доступ, свой список резюме и своё расписание.
+    """
+
+    def __init__(
+        self,
+        account: Account,
+        client: HHClient,
+        log: LogBus | TaggedLog,
+        *,
+        slot: int = 1,
+    ) -> None:
+        self.account = account
         self.client = client
         self.log = log
+        #: Номер вкладки (с 1). Нужен, пока имя владельца ещё не известно.
+        self.slot = slot
 
         self._lock = threading.RLock()
         self._wake = threading.Event()
@@ -93,7 +108,7 @@ class BumpEngine:
         self._phase = Phase.STARTING
         self._detail = ""
         self._resumes: list[Resume] = []
-        self._account = cfg.account
+        self._account = account.name
         self._started_at = time.time()
         self._session_bumps = 0
         self._last_sync_at: float | None = None
@@ -105,29 +120,24 @@ class BumpEngine:
         self._force_bump = False
         self._auth_needed = False
         self._backoff = 30.0
+        #: Спрашивали ли уже, кто владелец аккаунта. Сервис мог и не ответить
+        #: именем — тогда дёргать его каждую синхронизацию незачем.
+        self._identified = False
 
         self._wake_timer = WakeTimer()
         self._sleep_detector = SleepDetector()
-        self._awake_held = False
 
     # ------------------------------------------------------------ фасад UI
 
     def start(self) -> None:
-        if self.cfg.settings.prevent_sleep:
-            self._awake_held = keep_awake(True)
-            if self._awake_held:
-                self.log.info("Компьютеру запрещено засыпать по бездействию")
-            else:
-                self.log.warn("Не удалось запретить засыпание по бездействию")
-        self._thread = threading.Thread(target=self._run, name="engine", daemon=True)
+        self._thread = threading.Thread(
+            target=self._run, name=f"engine-{self.slot}", daemon=True
+        )
         self._thread.start()
 
     def stop(self) -> None:
         self._stop.set()
         self._wake.set()
-        if self._awake_held:
-            keep_awake(False)
-            self._awake_held = False
         self._wake_timer.close()
 
     def join(self, timeout: float = 5.0) -> None:
@@ -159,7 +169,7 @@ class BumpEngine:
             if not 0 < index <= len(self._resumes):
                 return None
             target = self._resumes[index - 1]
-            managed = self.cfg.settings.managed_resumes
+            managed = self.account.managed_resumes
             if managed is None:
                 managed = [item.id for item in self._resumes]
             if target.id in managed:
@@ -168,9 +178,9 @@ class BumpEngine:
             else:
                 managed = managed + [target.id]
                 verdict = f"«{target.title}» снова в работе"
-            self.cfg.settings.managed_resumes = managed
+            self.account.managed_resumes = managed
             self._replan_locked()
-        self.cfg.save()
+        self.account.save()
         self.log.info(verdict)
         self._wake.set()
         return verdict
@@ -184,15 +194,21 @@ class BumpEngine:
                 account=self._account,
                 started_at=self._started_at,
                 session_bumps=self._session_bumps,
-                total_bumps=self.cfg.stats.total_bumps,
-                last_bump_at=self.cfg.stats.last_bump_at,
+                total_bumps=self.account.stats.total_bumps,
+                last_bump_at=self.account.stats.last_bump_at,
                 last_sync_at=self._last_sync_at,
                 next_action_at=self._next_action_at,
                 wait_span=self._wait_span,
-                token_seconds_left=self.cfg.seconds_left,
+                token_seconds_left=self.account.seconds_left,
                 paused=self._paused,
                 offline_since=self._offline_since,
             )
+
+    def brief(self) -> tuple[str, str]:
+        """Для полосы вкладок: имя владельца (может быть пустым) и фаза."""
+        with self._lock:
+            phase = Phase.PAUSED if self._paused and self._phase == Phase.WAITING else self._phase
+            return self._account, phase
 
     @property
     def auth_needed(self) -> bool:
@@ -204,6 +220,9 @@ class BumpEngine:
             self._auth_needed = False
             self._force_sync = True
             self._phase = Phase.SYNCING
+            # Вход мог быть и в другой аккаунт — владельца выясним заново.
+            self._account = self.account.name
+            self._identified = False
         self._wake.set()
 
     # -------------------------------------------------------- планирование
@@ -215,7 +234,7 @@ class BumpEngine:
 
     def _jitter_for(self, resume: Resume, allowed_ts: float) -> int:
         """Стабильный разброс: пока hh не сдвинет время, отсчёт не «прыгает»."""
-        settings = self.cfg.settings
+        settings = self.account.settings
         low = max(0, int(settings.jitter_min_sec))
         high = max(low, int(settings.jitter_max_sec))
         if high == 0:
@@ -224,7 +243,7 @@ class BumpEngine:
 
     def _shift_out_of_quiet(self, when: float) -> float:
         """Сдвинуть время за пределы «тихих часов»."""
-        settings = self.cfg.settings
+        settings = self.account.settings
         if not settings.quiet_hours:
             return when
         moment = datetime.fromtimestamp(when)
@@ -239,7 +258,7 @@ class BumpEngine:
     def _replan_locked(self) -> None:
         now = time.time()
         for resume in self._resumes:
-            if not self.cfg.settings.is_managed(resume.id):
+            if not self.account.is_managed(resume.id):
                 resume.planned_at = None
                 continue
             if resume.blocked or not resume.finished:
@@ -274,16 +293,18 @@ class BumpEngine:
             self._offline_since = None
             managed = sum(1 for i in fresh if i.planned_at is not None)
 
-        if not self._account:
+        if not self._identified and (not self._account or not self.account.person_id):
             try:
-                name = self.client.whoami()
+                person_id, name = self.client.identity()
+                self._identified = True
             except HHError:
-                name = ""
-            if name:
+                person_id, name = "", ""
+            if name or person_id:
                 with self._lock:
-                    self._account = name
-                self.cfg.account = name
-                self.cfg.save()
+                    self._account = name or self._account
+                self.account.name = name or self.account.name
+                self.account.person_id = person_id or self.account.person_id
+                self.account.save()
 
         if not fresh:
             self.log.warn("На аккаунте не найдено ни одного резюме")
@@ -315,10 +336,10 @@ class BumpEngine:
                     self._session_bumps += 1
                     resume.problem = ""
                     resume.retry_after = 0.0
-                self.cfg.stats.record_bump(resume.title, moment)
+                self.account.stats.record_bump(resume.title, moment)
                 self.log.ok(f"«{resume.title}» поднято в поиске")
             else:
-                self.cfg.stats.failed_bumps += 1
+                self.account.stats.failed_bumps += 1
                 with self._lock:
                     resume.problem = detail
                     resume.retry_after = time.time() + FAILURE_COOLDOWN_SEC
@@ -327,7 +348,7 @@ class BumpEngine:
                     f"«{resume.title}»: {detail}. "
                     f"Следующая попытка через {FAILURE_COOLDOWN_SEC // 60} мин"
                 )
-        self.cfg.save()
+        self.account.save()
         return touched
 
     def _arm_wake_timer(self, seconds: float) -> None:
@@ -336,7 +357,7 @@ class BumpEngine:
         Ставим будильник чуть раньше срока: системе нужно время подняться,
         а сети — подключиться.
         """
-        if not self.cfg.settings.wake_from_sleep or not self._wake_timer.supported:
+        if not self.account.settings.wake_from_sleep or not self._wake_timer.supported:
             return
         lead = 60.0
         self._wake_timer.arm(max(1.0, seconds - lead))
@@ -344,7 +365,7 @@ class BumpEngine:
     def _compute_wait(self) -> float:
         """Сколько спать до следующего осмысленного действия."""
         now = time.time()
-        settings = self.cfg.settings
+        settings = self.account.settings
         with self._lock:
             planned = [r.planned_at for r in self._resumes if r.planned_at is not None]
             sync_due = (self._last_sync_at or 0) + settings.sync_interval_sec
@@ -405,7 +426,7 @@ class BumpEngine:
         self._set_phase(Phase.STOPPED)
 
     def _iteration(self) -> None:
-        if not self.cfg.authorized:
+        if not self.account.authorized:
             with self._lock:
                 self._auth_needed = True
             self._set_phase(Phase.AUTH, "требуется вход в аккаунт")
@@ -442,8 +463,8 @@ class BumpEngine:
 
     def _on_token_error(self, exc: TokenError) -> None:
         self.log.error(f"Авторизация слетела: {exc}")
-        self.cfg.clear_token()
-        self.cfg.save()
+        self.account.clear_token()
+        self.account.save()
         with self._lock:
             self._auth_needed = True
         self._set_phase(Phase.AUTH, "требуется повторный вход")

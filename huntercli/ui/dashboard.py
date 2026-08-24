@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass
 from datetime import datetime
 
 from rich import box
@@ -57,6 +58,8 @@ MIN_SUMMARY_ROWS = 3
 #: Ниже этих значений тело не заслуживает логотипа над собой.
 MIN_WIDE_BODY = 8
 MIN_NARROW_BODY = COMPACT_STATUS_ROWS + MIN_TABLE_PANEL
+#: Длиннее имя на вкладке не показываем: место нужно и соседним аккаунтам.
+TAB_NAME_LIMIT = 18
 
 PHASE_STYLE = {
     Phase.STARTING: ACCENT_SOFT,
@@ -85,9 +88,33 @@ HOTKEYS = [
     ("B", "поднять сейчас"),
     ("P", "пауза"),
     ("A", "перезайти"),
+    ("N", "ещё аккаунт"),
     ("1-9", "вкл/выкл резюме"),
     ("H", "справка"),
 ]
+
+#: Подсказки, которые нужны только когда аккаунтов несколько.
+TAB_HOTKEYS = [
+    ("Tab", "вкладка"),
+    ("D", "отключить"),
+]
+
+
+def hotkeys(multi: bool) -> list[tuple[str, str]]:
+    """Подсказки внизу экрана. Про вкладки говорим, только когда они есть."""
+    if not multi:
+        return list(HOTKEYS)
+    after = [key for key, _ in HOTKEYS].index("N") + 1
+    return HOTKEYS[:after] + TAB_HOTKEYS + HOTKEYS[after:]
+
+
+@dataclass(frozen=True)
+class TabInfo:
+    """Аккаунт в полосе вкладок: как подписан и чем сейчас занят."""
+
+    label: str = ""
+    phase: str = Phase.STARTING
+
 
 #: Разделы справки: (заголовок, строки, порядок вытеснения).
 #: Порядок в списке = порядок на экране. Число — очерёдность, в которой раздел
@@ -112,6 +139,9 @@ HELP_SECTIONS: list[tuple[str, list[tuple[str, str]], int]] = [
             ("B", "поднять всё, что разрешено поднять сию секунду"),
             ("P", "пауза — резюме перестают подниматься, но окно живёт"),
             ("A", "заново пройти вход в аккаунт"),
+            ("N", "подключить ещё один аккаунт на своей вкладке"),
+            ("Tab", "следующая вкладка, Shift+Tab — предыдущая"),
+            ("D", "отключить аккаунт открытой вкладки"),
             ("1…9", "включить или выключить резюме под номером в таблице"),
             ("L", "открыть файл журнала рядом с программой"),
             ("H", "закрыть эту справку"),
@@ -562,11 +592,66 @@ class Dashboard:
                 grid.add_row(key, Text(text, style="white" if key else MUTED))
         return _panel(grid, "СПРАВКА", hot=True)
 
-    def _footer(self, width: int) -> RenderableType:
+    @staticmethod
+    def _tab_name(index: int, tab: TabInfo, limit: int = TAB_NAME_LIMIT) -> str:
+        """Подпись вкладки. Имя владельца известно не сразу — до тех пор номер."""
+        name = tab.label.strip() or f"Аккаунт {index + 1}"
+        if len(name) > limit:
+            name = name[:max(1, limit - 1)] + "…"
+        return name
+
+    def _tab_chunk(self, line: Text, chunk: str, tab: TabInfo, *, current: bool) -> None:
+        if current:
+            # Открытая вкладка — плашкой: на неё смотрят первой.
+            line.append(chunk, style="bold white on " + FRAME_HOT)
+            return
+        line.append(chunk[:1], style=MUTED)
+        line.append(chunk[1:2], style=PHASE_STYLE.get(tab.phase, ACCENT))
+        line.append(chunk[2:], style=MUTED)
+
+    def _tabs_line(self, tabs: list[TabInfo], active: int, width: int) -> Text:
+        """Полоса вкладок. Открытая обязана в неё попасть, остальные — как выйдет."""
+        # Имена ужимаем под число вкладок: короткая подпись у всех полезнее,
+        # чем полная у двоих и «+4» вместо всех остальных.
+        limit = max(6, min(TAB_NAME_LIMIT, width // max(1, len(tabs)) - 6))
+        chunks = [f" ● {index + 1} {self._tab_name(index, tab, limit)} "
+                  for index, tab in enumerate(tabs)]
+
+        # Начало сдвигаем ровно настолько, чтобы открытая вкладка поместилась:
+        # без неё непонятно, к какому аккаунту относится всё остальное.
+        start = 0
+        while start < active and sum(len(c) + 1 for c in chunks[start:active + 1]) - 1 > width:
+            start += 1
+
+        line = Text(no_wrap=True, overflow="crop")
+        shown = 0
+        for index in range(start, len(chunks)):
+            gap = 1 if line.cell_len else 0
+            if line.cell_len + gap + len(chunks[index]) > width:
+                break
+            if gap:
+                line.append(" ")
+            self._tab_chunk(line, chunks[index], tabs[index], current=index == active)
+            shown += 1
+
+        if not shown:
+            # Даже открытая вкладка целиком не влезла — покажем сколько влезет.
+            self._tab_chunk(line, chunks[active], tabs[active], current=True)
+            line.truncate(max(1, width), overflow="ellipsis")
+            return line
+
+        hidden = len(tabs) - shown
+        tail = f" +{hidden}"
+        if hidden and line.cell_len + len(tail) <= width:
+            line.append(tail, style=MUTED)
+        line.truncate(max(1, width), overflow="crop")
+        return line
+
+    def _footer(self, width: int, *, multi: bool = False) -> RenderableType:
         """Подсказки по клавишам: сколько влезло, столько и показываем."""
         text = Text(no_wrap=True, overflow="crop")
         used = 0
-        for key, label in HOTKEYS:
+        for key, label in hotkeys(multi):
             chunk = len(key) + len(label) + 5
             if used + chunk > width:
                 break
@@ -595,29 +680,38 @@ class Dashboard:
             return 4
         return 0
 
-    def render(self, snap: Snapshot) -> RenderableType:
+    def render(
+        self,
+        snap: Snapshot,
+        tabs: list[TabInfo] | None = None,
+        active: int = 0,
+    ) -> RenderableType:
         width, height = self.console.size
         wide = width >= WIDE_LAYOUT_WIDTH
         log_size = self._log_size(height)
+        # Полоса вкладок появляется только со второго аккаунта: одному
+        # переключаться некуда, а строка в низком окне на счету.
+        tabs = list(tabs or [])
+        tabs_size = 1 if len(tabs) > 1 else 0
 
         # Логотип показываем везде, где он не съедает содержимое: считаем, что
         # останется телу, и сравниваем с необходимым минимумом. Жёсткий порог
         # по высоте убирал заголовок и в тех окнах, где места хватало с лихвой.
         art_rows = banner.art_height(width, compact=False)
         tall_header = art_rows > 0 and (
-            height - (art_rows + 1) - log_size - 2
+            height - (art_rows + 1) - log_size - tabs_size - 2
             >= (MIN_WIDE_BODY if wide else MIN_NARROW_BODY)
         )
         header_size = (art_rows + 1) if tall_header else COMPACT_HEADER_ROWS
 
         # Сколько строк реально достанется телу: панели считают по этому
         # числу, и ошибиться нельзя — лишнее они обрежут молча.
-        body_height = max(3, height - header_size - log_size - 2)
+        body_height = max(3, height - header_size - log_size - tabs_size - 2)
 
-        rows = [
-            Layout(name="header", size=header_size),
-            Layout(name="body", ratio=1),
-        ]
+        rows = [Layout(name="header", size=header_size)]
+        if tabs_size:
+            rows.append(Layout(name="tabs", size=tabs_size))
+        rows.append(Layout(name="body", ratio=1))
         if log_size:
             rows.append(Layout(name="log", size=log_size))
         rows.append(Layout(name="toast", size=1))
@@ -627,6 +721,8 @@ class Dashboard:
         root.split_column(*rows)
 
         root["header"].update(self._header(snap, width, tall_header))
+        if tabs_size:
+            root["tabs"].update(self._tabs_line(tabs, active, width))
 
         if self.show_help:
             root["body"].update(self._help_panel(body_height))
@@ -661,5 +757,5 @@ class Dashboard:
         if log_size:
             root["log"].update(self._log_panel(log_size - 2, width))
         root["toast"].update(self._toast_line(width, last_log=not log_size))
-        root["footer"].update(Align.left(self._footer(width - 1)))
+        root["footer"].update(Align.left(self._footer(width - 1, multi=tabs_size > 0)))
         return root

@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import sys
 import threading
 import time
@@ -375,9 +376,44 @@ def webview_available() -> tuple[bool, str]:
     return True, ""
 
 
+#: Папка сессии окна входа для версий до появления нескольких аккаунтов.
+LEGACY_SESSION_DIR = "webview"
+
+
+def session_dir(uid: str = "") -> str:
+    """Где окно входа хранит свою сессию. У каждого аккаунта папка своя.
+
+    С общей папкой второй вход молча попадал бы в тот же аккаунт, что и
+    первый: куки уже лежат на диске, и форма входа даже не показывается.
+    """
+    name = f"{LEGACY_SESSION_DIR}-{uid}" if uid else LEGACY_SESSION_DIR
+    return os.path.join(paths.state_dir(), name)
+
+
+def forget_session(uid: str) -> None:
+    """Убрать сохранённую сессию окна входа — аккаунт отключён."""
+    if not uid:
+        return
+    shutil.rmtree(session_dir(uid), ignore_errors=True)
+
+
+def drop_legacy_session() -> bool:
+    """Убрать общую папку сессии, оставшуюся от версий с одним аккаунтом.
+
+    Она больше не используется ни одним аккаунтом, а весит немало: это
+    полноценный профиль WebView2.
+    """
+    path = session_dir()
+    if not os.path.isdir(path):
+        return False
+    shutil.rmtree(path, ignore_errors=True)
+    return not os.path.isdir(path)
+
+
 def run_webview_flow(
     status: StatusFn,
     timeout_sec: int = 900,
+    uid: str = "",
 ) -> dict[str, Any] | None:
     """Открыть окно входа hh.ru и вернуть токен.
 
@@ -390,7 +426,7 @@ def run_webview_flow(
         raise AuthError(f"встроенный браузер недоступен: {exc}") from exc
 
     outcome: dict[str, Any] = {}
-    storage = os.path.join(paths.state_dir(), "webview")
+    storage = session_dir(uid)
 
     def worker(window: Any) -> None:
         # Что бы здесь ни случилось, окно обязано закрыться: упавший в прошлой

@@ -21,7 +21,7 @@ from rich.console import Console
 from huntercli.engine import Phase, Snapshot
 from huntercli.hh import Resume
 from huntercli.logbus import LogBus
-from huntercli.ui.dashboard import Dashboard
+from huntercli.ui.dashboard import Dashboard, TabInfo
 from huntercli.ui.theme import THEME
 
 #: Ряд намеренно доходит до минимума, который принимает app.py (58x14):
@@ -91,7 +91,14 @@ def _demo_snapshot() -> Snapshot:
     )
 
 
-def _render(board_setup, snap, log, width, height) -> str:
+def _tabs(count: int) -> list[TabInfo]:
+    """Вкладки как в жизни: обычное имя, длинное и аккаунт без имени."""
+    names = ["Алексей К.", "Иван Петрович Синицын", "", "Мария", "Пётр"]
+    phases = [Phase.WAITING, Phase.BUMPING, Phase.AUTH, Phase.OFFLINE, Phase.PAUSED]
+    return [TabInfo(names[index], phases[index]) for index in range(count)]
+
+
+def _render(board_setup, snap, log, width, height, tabs=None, active=0) -> str:
     # legacy_windows=False: иначе Rich отдаёт на столбец меньше, чем просили,
     # и все замеры ширины уезжают на единицу.
     console = Console(theme=THEME, highlight=False, file=io.StringIO(), width=width,
@@ -100,7 +107,7 @@ def _render(board_setup, snap, log, width, height) -> str:
     board = Dashboard(console, log)
     board.tick = 4
     board_setup(board)
-    console.print(board.render(snap))
+    console.print(board.render(snap, tabs, active))
     return console.export_text()
 
 
@@ -201,6 +208,29 @@ def run() -> bool:
         text = _render(lambda b: None, crowded, log, width, height)
         report.check(f"{width}x{height}: о спрятанных резюме сказано",
                      "…и ещё" in text or "показаны" in text)
+
+    report.section("Полоса вкладок аккаунтов")
+    # Строка вкладок отбирает строку у тела: вёрстка обязана это учесть на
+    # каждом размере окна, а открытая вкладка — остаться видимой.
+    for width, height in SIZES:
+        for active in (0, 2):
+            text = _render(lambda b: None, snap, log, width, height, _tabs(3), active)
+            lines = [line.rstrip() for line in text.splitlines()]
+            mark = f"{width}x{height}, вкладка {active + 1}"
+            report.check(f"{mark}: ничего не вылезает за край",
+                         not [ln for ln in lines if len(ln) > width])
+            report.check(f"{mark}: высота не превышена", len(lines) <= height, f"-> {len(lines)}")
+            report.check(f"{mark}: открытая вкладка на месте", f"● {active + 1} " in text)
+            report.check(f"{mark}: все панели закрыты", text.count("╭") == text.count("╰"))
+            report.check(f"{mark}: в таблице есть первое резюме",
+                         re.search(r"│\s+1\s+Ведущий", text) is not None)
+
+    lonely = _render(lambda b: None, snap, log, 120, 40, _tabs(1), 0)
+    report.check("с одним аккаунтом полосы вкладок нет", "● 1 " not in lonely)
+    report.check("и про переключение вкладок не сказано", "вкладка" not in lonely)
+    crowd = _render(lambda b: None, snap, log, 120, 40, _tabs(5), 4)
+    report.check("подсказка о вкладках появляется вместе с ними", "вкладка" in crowd)
+    report.check("вкладки, которые не влезли, посчитаны", "+1" in crowd or "● 1 " in crowd)
 
     report.section("Логотип показывается там, где помещается")
     roomy = _render(lambda b: None, snap, log, 140, 29)

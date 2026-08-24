@@ -74,7 +74,7 @@ class Handler(BaseHTTPRequestHandler):
                                     "errors": [{"value": "bad_authorization",
                                                 "type": "oauth"}]})
         if self.path == "/me":
-            return self._send(200, {"first_name": "Тест", "last_name": "Тестов"})
+            return self._send(200, {"id": "777", "first_name": "Тест", "last_name": "Тестов"})
         if self.path == "/resumes/mine":
             with STATE.lock:
                 items = [dict(item) for item in STATE.resumes.values()]
@@ -111,11 +111,12 @@ def _wait_for(predicate, seconds: float = 25.0) -> bool:
     return False
 
 
-def _make_engine(token: str, refresh: str = "RT") -> tuple[BumpEngine, Config, LogBus]:
+def _make_engine(token: str, refresh: str = "RT"):
+    """Движок с собственным аккаунтом: конфиг держит его, движок им живёт."""
     log = LogBus(to_file=False)
-    cfg = Config()
-    cfg.apply_token({"access_token": token, "refresh_token": refresh, "expires_in": 1209599})
-    return BumpEngine(cfg, hh.HHClient(cfg, log), log), cfg, log
+    account = Config().account
+    account.apply_token({"access_token": token, "refresh_token": refresh, "expires_in": 1209599})
+    return BumpEngine(account, hh.HHClient(account, log), log), account, log
 
 
 def run() -> bool:
@@ -130,7 +131,7 @@ def run() -> bool:
 
     try:
         report.section("Обычный цикл: поднятие и отказ по лимиту")
-        engine, cfg, log = _make_engine("GOOD-TOKEN")
+        engine, account, log = _make_engine("GOOD-TOKEN")
         engine.start()
         _wait_for(lambda: len(STATE.publish_calls) >= 2 and engine.snapshot().session_bumps >= 1)
         time.sleep(8)  # контрольная синхронизация после поднятия
@@ -139,9 +140,11 @@ def run() -> bool:
         report.check("оба резюме отправлены на поднятие",
                      set(STATE.publish_calls) == {"r1", "r2"}, f"-> {STATE.publish_calls}")
         report.check("успех посчитан ровно один раз", snap.session_bumps == 1)
-        report.check("статистика записана", cfg.stats.total_bumps == 1)
-        report.check("отказ посчитан", cfg.stats.failed_bumps >= 1)
+        report.check("статистика записана", account.stats.total_bumps == 1)
+        report.check("отказ посчитан", account.stats.failed_bumps >= 1)
         report.check("имя аккаунта подтянуто", snap.account == "Тест Тестов", f"-> {snap.account!r}")
+        report.check("владелец запомнен — по нему ловятся повторные подключения",
+                     account.person_id == "777", f"-> {account.person_id!r}")
 
         r1 = next(r for r in snap.resumes if r.id == "r1")
         r2 = next(r for r in snap.resumes if r.id == "r2")
@@ -176,9 +179,9 @@ def run() -> bool:
         time.sleep(1.5)
         report.check("выключенное не планируется",
                      next(r for r in engine.snapshot().resumes if r.id == "r1").planned_at is None)
-        report.check("выбор сохранён в конфиг", cfg.settings.managed_resumes == ["r2"])
+        report.check("выбор сохранён в конфиг", account.managed_resumes == ["r2"])
         engine.toggle_resume(1)
-        report.check("резюме включается обратно", "r1" in (cfg.settings.managed_resumes or []))
+        report.check("резюме включается обратно", "r1" in (account.managed_resumes or []))
         report.check("несуществующий номер не ломает", engine.toggle_resume(99) is None)
         engine.stop()
         engine.join()
@@ -198,12 +201,12 @@ def run() -> bool:
             return {"access_token": "NEW-TOKEN", "refresh_token": "RT2", "expires_in": 1209599}
 
         auth.refresh_token = fake_refresh
-        engine2, cfg2, _ = _make_engine("STALE")
+        engine2, account2, _ = _make_engine("STALE")
         engine2.start()
         _wait_for(lambda: bool(calls), 20)
         time.sleep(3)
         report.check("обновление токена запрошено", calls == ["RT"], f"-> {calls}")
-        report.check("новый токен сохранён", cfg2.access_token == "NEW-TOKEN")
+        report.check("новый токен сохранён", account2.access_token == "NEW-TOKEN")
         report.check("работа продолжилась без участия человека", "r1" in STATE.publish_calls)
         report.check("повторный вход не потребовался", not engine2.auth_needed)
         engine2.stop()
@@ -215,11 +218,11 @@ def run() -> bool:
             raise auth.AuthError("refresh_token отозван")
 
         auth.refresh_token = dead_refresh
-        engine3, cfg3, _ = _make_engine("DEAD")
+        engine3, account3, _ = _make_engine("DEAD")
         engine3.start()
         _wait_for(lambda: engine3.auth_needed, 20)
         report.check("движок попросил повторный вход", engine3.auth_needed)
-        report.check("негодный токен стёрт", not cfg3.access_token)
+        report.check("негодный токен стёрт", not account3.access_token)
         engine3.stop()
         engine3.join()
 
