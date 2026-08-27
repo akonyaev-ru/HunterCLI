@@ -43,7 +43,16 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=['tkinter', 'PySide6', 'PyQt5', 'PyQt6', 'matplotlib', 'numpy'],
+    # PIL, cryptography и bcrypt приложению не нужны, но затягиваются, если
+    # оказались в окружении сборки: `collect_all('webview')` берёт пакет
+    # целиком, вместе с бэкендами для macOS и режимом HTTPS-сервера
+    # (`webview/__init__.py`, `__generate_ssl_cert`). Оба пути у нас мертвы:
+    # `webview.start()` зовётся без ssl, а cryptography там импортируется
+    # лениво под `try/except ImportError`. Без этих запретов размер .exe
+    # зависит от того, что установлено на машине сборщика: 18 МБ в чистом
+    # окружении против 29 МБ в общем (проверено 2026-08-27).
+    excludes=['tkinter', 'PySide6', 'PyQt5', 'PyQt6', 'matplotlib', 'numpy',
+              'PIL', 'cryptography', 'bcrypt'],
     noarchive=False,
 )
 pyz = PYZ(a.pure)
