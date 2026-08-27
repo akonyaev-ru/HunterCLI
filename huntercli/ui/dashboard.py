@@ -656,8 +656,12 @@ class Dashboard:
 
         rows: list[tuple[str, str]] = [(f"За {report.days} дней", "")]
         rows.append(("Просмотров", _signed(report.views)))
+        # «К прошлой неделе» — про просмотры, поэтому идёт вплотную к ним:
+        # между ними ничего не вставлять, иначе строка читается как чужая.
         change = report.change
         rows.append(("К прошлой неделе", _signed(change) if change else "столько же"))
+        if report.has_talks:
+            rows.append(("Приглашений", _signed(report.invitations_gained)))
         rows.append(("Поднятий", str(report.bumps)))
         per_bump = report.per_bump
         rows.append(("На одно поднятие", _decimal(per_bump) if per_bump is not None else "—"))
@@ -665,26 +669,36 @@ class Dashboard:
         if report.covered < report.days:
             rows.append(("Данные за", f"{report.covered} из {report.days} дней"))
 
-        # Разбивка помещается не всегда: заголовок, хотя бы одно резюме и
-        # отбивка перед ними — это четыре строки.
-        if room >= len(rows) + 4:
+        # Итоги считаем раньше разбивки и место под них резервируем. Разбивка
+        # длинная и её не жалко обрезать, а «приглашений 39 из 355» — то, ради
+        # чего экран открывают во второй раз. Раньше список резюме съедал всё,
+        # и итогов не было видно ни на одном размере окна.
+        footer = [("", ""), ("Всего просмотров", str(report.total_views))]
+        if report.has_talks:
+            footer.append(("Приглашений", f"{report.invitations} из {report.talks}"))
+        footer.append(("Наблюдаем с", _day(report.since)))
+        if room < len(rows) + len(footer):
+            footer = []
+
+        # Разбивке нужны отбивка, заголовок и хотя бы одна строка.
+        if room >= len(rows) + len(footer) + 3:
             rows.append(("", ""))
             rows.append(("По резюме", ""))
-            free = room - len(rows)
+            free = room - len(rows) - len(footer)
             shown = report.resumes
             if len(shown) > free:
                 # Место под строку «и ещё N» отнимаем у самих резюме.
                 shown = shown[:max(0, free - 1)]
             for item in shown:
-                rows.append((item.title, f"{_signed(item.views)} · всего {item.total}"))
+                value = f"{_signed(item.views)} · всего {item.total}"
+                if item.invitations:
+                    value += f" · пригл. {item.invitations}"
+                rows.append((item.title, value))
             hidden = len(report.resumes) - len(shown)
             if hidden > 0:
                 rows.append((f"…и ещё {hidden}", ""))
 
-        if room >= len(rows) + 3:
-            rows.append(("", ""))
-            rows.append(("Всего просмотров", str(report.total_views)))
-            rows.append(("Наблюдаем с", _day(report.since)))
+        rows.extend(footer)
         return rows[:room]
 
     def _stats_panel(self, height: int) -> RenderableType:

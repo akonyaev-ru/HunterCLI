@@ -310,11 +310,37 @@ class BumpEngine:
         # Срез просмотров за сегодня. Точка одна на сутки, синхронизаций
         # много — каждая просто уточняет её свежим значением.
         history.record_views(self.account.uid, fresh)
+        self._count_talks()
 
         if not fresh:
             self.log.warn("На аккаунте не найдено ни одного резюме")
         else:
             self.log.step(f"Синхронизация: резюме — {len(fresh)}, под автопилотом — {managed}")
+
+    def _count_talks(self) -> None:
+        """Пересчитать обращения к работодателям — раз в сутки, не чаще.
+
+        Приглашения приходится считать перебором всех обращений: фильтра под
+        них у сервиса нет. Четыре запроса в день — ничто, но на каждой
+        синхронизации это было бы под четыре сотни запросов в сутки.
+
+        Неудача здесь не должна ронять поднятие: статистика вторична. А вот
+        потерю доступа глушить нельзя — по ней приложение просит войти заново.
+        """
+        if not history.needs_talks(self.account.uid):
+            return
+        try:
+            talks = self.client.negotiations()
+        except TokenError:
+            raise
+        except HHError as exc:
+            self.log.warn(f"Отклики и приглашения посчитать не вышло: {exc}")
+            return
+        history.record_talks(self.account.uid, talks)
+        self.log.step(
+            f"Обращения к работодателям: {talks.total}, "
+            f"из них приглашений — {talks.invitations}"
+        )
 
     def _due_resumes(self, force: bool) -> list[Resume]:
         now = time.time()

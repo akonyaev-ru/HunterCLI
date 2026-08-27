@@ -18,6 +18,18 @@ sandbox()
 from huntercli import history, paths
 
 
+class FakeTalks:
+    """Сводка обращений в том виде, в каком её отдаёт hh.Talks."""
+
+    def __init__(self, total, invitations, responses=0, discards=0, by_resume=None):
+        self.total = total
+        self.invitations = invitations
+        self.responses = responses
+        self.discards = discards
+        self.by_resume = {}
+        self.invitations_by_resume = by_resume or {}
+
+
 class FakeResume:
     """От резюме истории нужны ровно три поля."""
 
@@ -122,6 +134,49 @@ def run() -> bool:
     report.check("общий счётчик — сумма по резюме", split.total_views == 112,
                  f"-> {split.total_views}")
 
+    report.section("Обращения к работодателям")
+    _reset()
+    report.check("до первого подсчёта их считать пора", history.needs_talks("a"))
+    empty_talks = history.report("a")
+    report.check("пока не считали — не показываем", not empty_talks.has_talks)
+
+    _feed("a", {"2026-08-20": 100}, identity="1", title="Юрист")
+    history.record_talks("a", FakeTalks(355, 39, responses=213, discards=103,
+                                        by_resume={"1": 38}), now="2026-08-20")
+    report.check("сегодня уже считали", not history.needs_talks("a", now="2026-08-20"))
+    report.check("назавтра снова пора", history.needs_talks("a", now="2026-08-21"))
+
+    talks = history.report("a", now="2026-08-20")
+    report.check("обращения показываются", talks.has_talks)
+    report.check("всего обращений", talks.talks == 355, f"-> {talks.talks}")
+    report.check("приглашений", talks.invitations == 39, f"-> {talks.invitations}")
+    report.check("откликов", talks.responses == 213, f"-> {talks.responses}")
+    report.check("отказов", talks.discards == 103, f"-> {talks.discards}")
+    report.check("приглашения привязаны к резюме",
+                 talks.resumes[0].invitations == 38, f"-> {talks.resumes[0].invitations}")
+
+    # Прирост приглашений считается так же, как прирост просмотров.
+    _feed("a", {"2026-08-22": 130}, identity="1", title="Юрист")
+    history.record_talks("a", FakeTalks(360, 42, by_resume={"1": 41}), now="2026-08-22")
+    grown = history.report("a", now="2026-08-22")
+    report.check("приглашений прибавилось", grown.invitations_gained == 3,
+                 f"-> {grown.invitations_gained}")
+    report.check("итог — свежий срез, а не сумма", grown.invitations == 42,
+                 f"-> {grown.invitations}")
+    report.check("у резюме тоже свежее число", grown.resumes[0].invitations == 41,
+                 f"-> {grown.resumes[0].invitations}")
+
+    # Обращения с резюме, которого мы не знаем, в разбивку не идут, но в
+    # общий счёт входят: иначе числа не сойдутся.
+    history.record_talks("a", FakeTalks(400, 50, by_resume={"1": 41, "чужое": 9}),
+                         now="2026-08-23")
+    mixed = history.report("a", now="2026-08-23")
+    report.check("чужое резюме в разбивке не появилось",
+                 [r.title for r in mixed.resumes] == ["Юрист"],
+                 f"-> {[r.title for r in mixed.resumes]}")
+    report.check("в общем счёте оно учтено", mixed.invitations == 50,
+                 f"-> {mixed.invitations}")
+
     report.section("Аккаунты не смешиваются")
     _reset()
     _feed("a", {"2026-08-21": 0, "2026-08-22": 50})
@@ -155,6 +210,15 @@ def run() -> bool:
     report.check("точка старше года выброшена", "2025-01-01" not in stored,
                  f"-> {sorted(stored)}")
     report.check("свежие точки на месте", len(stored) == 2, f"-> {sorted(stored)}")
+
+    history.record_talks("a", FakeTalks(10, 1, by_resume={"1": 1}), now="2025-01-01")
+    history.record_talks("a", FakeTalks(20, 2, by_resume={"1": 2}), now="2026-08-22")
+    entry = history.load()["accounts"]["a"]
+    report.check("старая сводка обращений выброшена",
+                 "2025-01-01" not in entry["talks"], f"-> {sorted(entry['talks'])}")
+    report.check("старые приглашения резюме выброшены",
+                 "2025-01-01" not in (entry["resumes"]["1"].get("invites") or {}),
+                 f"-> {sorted(entry['resumes']['1'].get('invites') or {})}")
 
     _reset()
     return report.summary()

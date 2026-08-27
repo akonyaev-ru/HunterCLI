@@ -16,7 +16,7 @@ sandbox()
 import huntercli.hh as hh
 from huntercli import auth
 from huntercli.config import Config
-from huntercli.engine import BumpEngine
+from huntercli.engine import BumpEngine, Phase
 from huntercli.logbus import LogBus
 
 PORT = 8797
@@ -44,6 +44,17 @@ class FakeHH:
                    "finished": True, "blocked": False, "status": {"name": "Опубликовано"}},
         }
         self.quota_blocked = {"r2"}
+        # Обращения к работодателям: две страницы, чтобы проверить перебор.
+        # Состояния взяты у настоящего сервиса: response, discard, invitation.
+        self.talks_pages = [
+            [{"state": {"id": "response"}, "resume": {"id": "r1"}}] * 2
+            + [{"state": {"id": "invitation"}, "resume": {"id": "r1"}}]
+            + [{"state": {"id": "discard"}, "resume": {"id": "r2"}}],
+            [{"state": {"id": "invitation"}, "resume": {"id": "r1"}}]
+            + [{"state": {"id": "response"}, "resume": {"id": "нет такого"}}],
+        ]
+        self.talks_calls: list[int] = []
+        self.talks_broken = False
 
 
 STATE = FakeHH()
@@ -75,6 +86,22 @@ class Handler(BaseHTTPRequestHandler):
                                                 "type": "oauth"}]})
         if self.path == "/me":
             return self._send(200, {"id": "777", "first_name": "Тест", "last_name": "Тестов"})
+        if self.path.startswith("/negotiations"):
+            from urllib.parse import parse_qs, urlparse
+
+            page = int((parse_qs(urlparse(self.path).query).get("page") or ["0"])[0])
+            with STATE.lock:
+                STATE.talks_calls.append(page)
+                if STATE.talks_broken:
+                    # Не 500: он в RETRYABLE, клиент трижды повторил бы со сном.
+                    return self._send(400, {"errors": [{"value": "page",
+                                                        "type": "bad_argument"}]})
+                pages = STATE.talks_pages
+                items = pages[page] if 0 <= page < len(pages) else []
+                total = sum(len(chunk) for chunk in pages)
+                count = len(pages)
+            return self._send(200, {"items": items, "found": total,
+                                    "pages": count, "page": page, "per_page": 100})
         if self.path == "/resumes/mine":
             with STATE.lock:
                 items = [dict(item) for item in STATE.resumes.values()]
@@ -170,6 +197,62 @@ def run() -> bool:
         engine.request_bump()
         time.sleep(3)
         report.check("клавиша B пробивает паузу", STATE.publish_calls.count("r2") == 2)
+
+        report.section("Обращения к работодателям считаются раз в сутки")
+        from huntercli import history
+
+        uid = engine.account.uid
+        _wait_for(lambda: not history.needs_talks(uid))
+        report.check("сводка обращений записана", not history.needs_talks(uid))
+        talks_report = history.report(uid)
+        report.check("обе страницы разобраны", talks_report.talks == 6,
+                     f"-> {talks_report.talks}")
+        report.check("приглашения сосчитаны", talks_report.invitations == 2,
+                     f"-> {talks_report.invitations}")
+        report.check("отклики сосчитаны", talks_report.responses == 3,
+                     f"-> {talks_report.responses}")
+        report.check("отказы сосчитаны", talks_report.discards == 1,
+                     f"-> {talks_report.discards}")
+        report.check("страниц запрошено ровно две", STATE.talks_calls == [0, 1],
+                     f"-> {STATE.talks_calls}")
+        by_resume = {item.title: item.invitations for item in talks_report.resumes}
+        report.check("приглашения привязаны к резюме", by_resume.get("Юрист") == 2,
+                     f"-> {by_resume}")
+        report.check("обращение с чужого резюме в разбивку не попало",
+                     sum(by_resume.values()) == 2, f"-> {by_resume}")
+
+        # Второй синхронизации того же дня повторный перебор не нужен.
+        before = list(STATE.talks_calls)
+        engine.request_sync()
+        _wait_for(lambda: engine.snapshot().last_sync_at is not None)
+        report.check("за сутки считаем один раз", STATE.talks_calls == before,
+                     f"-> {STATE.talks_calls}")
+
+        # Статистика вторична: её поломка не должна ронять движок. Берём
+        # отдельный незапущенный движок: у работающего фоновый поток сам
+        # ходит за обращениями, и проверка стала бы гонкой.
+        with STATE.lock:
+            STATE.talks_broken = True
+        quiet, _, quiet_log = _make_engine("GOOD-TOKEN")
+        quiet._count_talks()  # обязано вернуться само, без исключения
+        report.check("неудача подсчёта не выбрасывает исключение", True)
+        report.check("о неудаче сказано в журнале",
+                     any("посчитать не вышло" in e.text for e in quiet_log.tail(50)),
+                     f"-> {[e.text[:40] for e in quiet_log.tail(3)]}")
+        report.check("испорченный срез не записан", history.needs_talks(quiet.account.uid))
+        with STATE.lock:
+            STATE.talks_broken = False
+
+        # А работающий движок тем временем продолжает поднимать.
+        with STATE.lock:
+            before_calls = len(STATE.publish_calls)
+            STATE.resumes["r2"]["can_publish_or_update"] = True
+            STATE.resumes["r2"]["next_publish_at"] = _iso(-60)
+        engine.request_bump()
+        _wait_for(lambda: len(STATE.publish_calls) > before_calls)
+        report.check("поднятия идут своим чередом",
+                     len(STATE.publish_calls) > before_calls,
+                     f"-> было {before_calls}, стало {len(STATE.publish_calls)}")
 
         report.section("Пауза и выбор резюме")
         report.check("пауза включается", engine.toggle_pause() is True)

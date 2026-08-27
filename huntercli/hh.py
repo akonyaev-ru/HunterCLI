@@ -63,6 +63,35 @@ def parse_hh_time(value: str | None) -> datetime | None:
     return parsed
 
 
+#: Сколько обращений просим за раз. Сотня — потолок сервиса.
+TALKS_PAGE = 100
+#: Предохранитель от бесконечного цикла на неожиданном ответе: двадцать
+#: страниц — это две тысячи обращений, больше у соискателя не бывает.
+TALKS_MAX_PAGES = 20
+
+#: Состояния обращения у сервиса. Отклик отправлен и ждёт ответа, отказ —
+#: работодатель ответил нет, приглашение — позвал.
+TALK_STATES = ("response", "discard", "invitation")
+
+
+@dataclass
+class Talks:
+    """Сводка по обращениям к работодателям на момент опроса.
+
+    Числа накопительные, как и счётчик просмотров: прирост считается
+    разностью суточных срезов.
+    """
+
+    total: int = 0
+    invitations: int = 0
+    responses: int = 0
+    discards: int = 0
+    #: id резюме -> сколько обращений с него отправлено.
+    by_resume: dict[str, int] = field(default_factory=dict)
+    #: id резюме -> сколько приглашений оно принесло.
+    invitations_by_resume: dict[str, int] = field(default_factory=dict)
+
+
 @dataclass
 class Resume:
     id: str
@@ -278,6 +307,54 @@ class HHClient:
             raise HHError(f"на список резюме пришёл код {response.status_code}")
         data = _json_or_none(response) or {}
         return [Resume.from_api(item) for item in data.get("items", [])]
+
+    def negotiations(self) -> Talks:
+        """Пересчитать обращения к работодателям по состояниям.
+
+        Спросить «сколько у меня приглашений» одним запросом нельзя: фильтра
+        под них нет. Проверено перебором 2026-08-27 — status принимает
+        response, discard, all, active и non_archived, а invitation отвергает
+        как bad_argument. Поэтому листаем всё подряд: четыре страницы на 355
+        обращений, около двух секунд. Раз в сутки — нормально, на каждой
+        синхронизации — перебор.
+
+        Порядок записей сервис не гарантирует по дате (проверено там же:
+        27-е, 25-е, 26-е подряд), поэтому остановиться на свежих нельзя.
+        """
+        talks = Talks()
+        for page in range(TALKS_MAX_PAGES):
+            response = self._call("GET", "/negotiations",
+                                  params={"per_page": TALKS_PAGE, "page": page})
+            if response.status_code != 200:
+                detail = explain_errors(_json_or_none(response))
+                raise HHError(detail or f"на список обращений пришёл код {response.status_code}")
+            data = _json_or_none(response) or {}
+            items = data.get("items")
+            if not isinstance(items, list):
+                break
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                talks.total += 1
+                state = str(((item.get("state") or {}) if isinstance(item.get("state"), dict)
+                             else {}).get("id") or "")
+                if state == "invitation":
+                    talks.invitations += 1
+                elif state == "discard":
+                    talks.discards += 1
+                elif state == "response":
+                    talks.responses += 1
+                resume = item.get("resume")
+                identity = str((resume or {}).get("id") or "") if isinstance(resume, dict) else ""
+                if not identity:
+                    continue
+                talks.by_resume[identity] = talks.by_resume.get(identity, 0) + 1
+                if state == "invitation":
+                    talks.invitations_by_resume[identity] = (
+                        talks.invitations_by_resume.get(identity, 0) + 1)
+            if page + 1 >= int(data.get("pages") or 1):
+                break
+        return talks
 
     def publish(self, resume_id: str) -> tuple[bool, str]:
         """Поднять резюме. Возвращает (успех, пояснение)."""

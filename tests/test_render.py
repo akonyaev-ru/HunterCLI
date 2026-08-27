@@ -345,11 +345,14 @@ def run() -> bool:
     def _report(count: int = 3, **changes) -> history.Report:
         """Сводка нужной формы, без обращения к диску."""
         base = dict(days=7, views=85, views_before=42, bumps=18, covered=5,
-                    total_views=1309, since="2026-08-20")
+                    total_views=1309, since="2026-08-20",
+                    talks=355, invitations=39, responses=213, discards=103,
+                    invitations_gained=2)
         base.update(changes)
         titles = ["Ведущий юрист по корпоративному праву", "Дизайнер интерфейсов",
                   "Руководитель юридического департамента", "Курьер", "Оператор"]
-        base["resumes"] = [history.ResumeStat(titles[i % len(titles)], 80 - i * 20, 1204 - i * 100)
+        base["resumes"] = [history.ResumeStat(titles[i % len(titles)], 80 - i * 20,
+                                             1204 - i * 100, 38 if i == 0 else 0)
                            for i in range(count)]
         return history.Report(**base)
 
@@ -386,6 +389,21 @@ def run() -> bool:
     report.check("пустой экран всё равно с рамкой", "СТАТИСТИКА" in nothing)
     chunks.append(f"\n=== СТАТИСТИКА БЕЗ ДАННЫХ ===\n{nothing}")
 
+    report.check("приглашения за неделю видны", "+2" in shown, "-> нет «+2»")
+    report.check("итог по приглашениям внизу", "39 из 355" in shown, "-> нет «39 из 355»")
+    # Итоги важнее длинного списка резюме: место под них резервируется раньше,
+    # иначе разбивка съедала всё и главные числа не показывались нигде.
+    crowded = _stats(_report(count=12))
+    report.check("с длинной разбивкой итоги всё равно на месте", "39 из 355" in crowded)
+    report.check("а сама разбивка при этом обрезана", "…и ещё" in crowded)
+    report.check("приглашения привязаны к резюме", "пригл. 38" in shown, "-> нет «пригл. 38»")
+    # Пока обращения ни разу не считали, этих строк быть не должно: ноль
+    # приглашений и «ещё не считали» — разные вещи.
+    silent = _stats(_report(talks=0, invitations=0, invitations_gained=0))
+    report.check("до первого подсчёта о приглашениях молчим",
+                 "Приглашений" not in silent)
+    report.check("а просмотры показываются как раньше", "+85" in silent)
+
     report.section("Статистика помещается в окно")
     # Резюме заведомо больше, чем строк: разбивка обязана обрезаться, а не
     # выдавливать панель за край. Правило то же, что у таблицы резюме.
@@ -396,6 +414,7 @@ def run() -> bool:
                      and not [ln for ln in lines if len(ln) > width])
         report.check(f"{width}x{height}: панель замкнута", "╰" in text or "└" in text)
         report.check(f"{width}x{height}: главное число на месте", "+85" in text)
+        report.check(f"{width}x{height}: приглашения не потерялись", "+2" in text)
         report.check(f"{width}x{height}: пустых панелей нет", not _empty_panels(text))
 
     # Об обрезанной разбивке экран сообщает, а не молчит.

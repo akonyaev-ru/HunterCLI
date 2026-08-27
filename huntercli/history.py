@@ -78,14 +78,18 @@ def _account(data: dict[str, Any], uid: str) -> dict[str, Any]:
     entry = data.setdefault("accounts", {}).setdefault(uid, {})
     entry.setdefault("resumes", {})
     entry.setdefault("bumps", {})
+    entry.setdefault("talks", {})
     return entry
 
 
 def _prune(entry: dict[str, Any], now: str) -> None:
     edge = _shift(now, -KEEP_DAYS)
     for resume in entry["resumes"].values():
-        resume["days"] = {d: v for d, v in (resume.get("days") or {}).items() if d >= edge}
+        for series in ("days", "invites"):
+            if series in resume:
+                resume[series] = {d: v for d, v in (resume.get(series) or {}).items() if d >= edge}
     entry["bumps"] = {d: v for d, v in entry["bumps"].items() if d >= edge}
+    entry["talks"] = {d: v for d, v in (entry.get("talks") or {}).items() if d >= edge}
 
 
 def record_views(uid: str, resumes: Iterable[Any], *, now: str = "") -> bool:
@@ -138,6 +142,45 @@ def forget(uid: str) -> bool:
         return save(data)
 
 
+def needs_talks(uid: str, *, now: str = "") -> bool:
+    """Пора ли пересчитывать обращения. Считаем раз в сутки.
+
+    Фильтра по приглашениям у сервиса нет, приходится листать все обращения
+    подряд — четыре запроса на четыре сотни. Раз в день это ничто, на каждой
+    синхронизации (а их под сотню в сутки) — уже неприлично.
+    """
+    now = now or today()
+    entry = load().get("accounts", {}).get(uid) or {}
+    return now not in (entry.get("talks") or {})
+
+
+def record_talks(uid: str, talks: Any, *, now: str = "") -> bool:
+    """Запомнить сегодняшний срез обращений к работодателям.
+
+    От `talks` нужны поля сводки `hh.Talks`. Приглашения по резюме кладём
+    только к тем резюме, которые уже известны по срезам просмотров: обращения
+    с удалённых резюме в разбивке ни к чему, но в общий счёт они входят.
+    """
+    now = now or today()
+    with _LOCK:
+        data = load()
+        entry = _account(data, uid)
+        entry["talks"][now] = {
+            "total": int(getattr(talks, "total", 0) or 0),
+            "invitations": int(getattr(talks, "invitations", 0) or 0),
+            "responses": int(getattr(talks, "responses", 0) or 0),
+            "discards": int(getattr(talks, "discards", 0) or 0),
+        }
+        by_resume = getattr(talks, "invitations_by_resume", None) or {}
+        for identity, count in by_resume.items():
+            slot = entry["resumes"].get(str(identity))
+            if slot is None:
+                continue
+            slot.setdefault("invites", {})[now] = int(count or 0)
+        _prune(entry, now)
+        return save(data)
+
+
 def _daily_gains(days: dict[str, Any]) -> dict[str, int]:
     """Прирост по дням: разность соседних точек.
 
@@ -165,6 +208,8 @@ class ResumeStat:
     title: str
     views: int
     total: int
+    #: Сколько приглашений принесло это резюме за всё время наблюдения.
+    invitations: int = 0
 
 
 @dataclass
@@ -180,6 +225,13 @@ class Report:
     #: включённой круглые сутки, и молчать об этом нечестно.
     covered: int = 0
     total_views: int = 0
+    #: Обращения к работодателям на последний срез.
+    talks: int = 0
+    invitations: int = 0
+    responses: int = 0
+    discards: int = 0
+    #: Приглашений прибавилось за окно.
+    invitations_gained: int = 0
     since: str = ""
     resumes: list[ResumeStat] = field(default_factory=list)
 
@@ -195,6 +247,11 @@ class Report:
     def per_bump(self) -> float | None:
         """Просмотров на одно поднятие. None — поднятий за окно не было."""
         return self.views / self.bumps if self.bumps else None
+
+    @property
+    def has_talks(self) -> bool:
+        """Считали ли мы обращения хоть раз. До первого раза их не показываем."""
+        return self.talks > 0
 
 
 def report(uid: str, *, days: int = WINDOW_DAYS, now: str = "") -> Report:
@@ -224,9 +281,19 @@ def report(uid: str, *, days: int = WINDOW_DAYS, now: str = "") -> Report:
         before += sum(v for day, v in gains.items() if prev_start <= day < start)
         current = int(points.get(max(points), 0) or 0)
         total += current
-        stats.append(ResumeStat(slot.get("title") or "Без названия", gained, current))
+        invites = slot.get("invites") or {}
+        last_invites = int(invites.get(max(invites), 0) or 0) if invites else 0
+        stats.append(ResumeStat(slot.get("title") or "Без названия", gained, current,
+                                last_invites))
 
     bumps = entry.get("bumps") or {}
+    talks = entry.get("talks") or {}
+    latest = talks.get(max(talks)) if talks else None
+    latest = latest if isinstance(latest, dict) else {}
+    invite_days = {day: int((row or {}).get("invitations", 0) or 0)
+                   for day, row in talks.items() if isinstance(row, dict)}
+    invite_gains = _daily_gains(invite_days)
+
     # По убыванию отдачи: разговор начинается с резюме, которое работает.
     stats.sort(key=lambda item: (-item.views, -item.total, item.title))
     return Report(
@@ -236,6 +303,11 @@ def report(uid: str, *, days: int = WINDOW_DAYS, now: str = "") -> Report:
         bumps=sum(int(v or 0) for day, v in bumps.items() if start <= day <= now),
         covered=len(covered),
         total_views=total,
+        talks=int(latest.get("total", 0) or 0),
+        invitations=int(latest.get("invitations", 0) or 0),
+        responses=int(latest.get("responses", 0) or 0),
+        discards=int(latest.get("discards", 0) or 0),
+        invitations_gained=sum(v for day, v in invite_gains.items() if start <= day <= now),
         since=min(seen) if seen else "",
         resumes=stats,
     )
