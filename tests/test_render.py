@@ -18,7 +18,7 @@ sandbox()
 
 from rich.console import Console
 
-from huntercli import APP_NAME
+from huntercli import APP_NAME, history
 from huntercli.engine import Phase, Snapshot
 from huntercli.hh import Resume
 from huntercli.logbus import LogBus
@@ -340,8 +340,72 @@ def run() -> bool:
     report.check("названия площадки в заголовке нет",
                  not any("hh" in t.lower() for t in every))
 
+    report.section("Экран статистики")
+
+    def _report(count: int = 3, **changes) -> history.Report:
+        """Сводка нужной формы, без обращения к диску."""
+        base = dict(days=7, views=85, views_before=42, bumps=18, covered=5,
+                    total_views=1309, since="2026-08-20")
+        base.update(changes)
+        titles = ["Ведущий юрист по корпоративному праву", "Дизайнер интерфейсов",
+                  "Руководитель юридического департамента", "Курьер", "Оператор"]
+        base["resumes"] = [history.ResumeStat(titles[i % len(titles)], 80 - i * 20, 1204 - i * 100)
+                           for i in range(count)]
+        return history.Report(**base)
+
+    def _stats(board_report, width=120, height=40) -> str:
+        def setup(board):
+            board.show_stats = True
+            board.stats = board_report
+        return _render(setup, snap, log, width, height)
+
+    shown = _stats(_report())
+    report.check("экран открывается", "СТАТИСТИКА" in shown)
+    report.check("прирост со знаком", "+85" in shown, "-> нет «+85»")
+    report.check("динамика к прошлой неделе", "+43" in shown, "-> нет «+43»")
+    report.check("поднятия показаны", "Поднятий" in shown)
+    report.check("отдача поднятия посчитана", "4,7" in shown, "-> нет «4,7»")
+    report.check("о пропусках сказано", "5 из 7 дней" in shown)
+    report.check("разбивка по резюме есть", "Ведущий юрист" in shown)
+    report.check("общий счётчик внизу", "1309" in shown)
+    report.check("дата начала наблюдений", "20.08" in shown)
+    chunks.append(f"\n=== СТАТИСТИКА ===\n{shown}")
+
+    # Динамика в ноль — «столько же» понятнее, чем «+0».
+    flat = _stats(_report(views=42, views_before=42))
+    report.check("нулевая динамика названа словами", "столько же" in flat)
+    # Поднятий за окно не было — делить не на что.
+    idle = _stats(_report(bumps=0))
+    report.check("без поднятий отдача не выдумывается", "На одно поднятие" in idle)
+    # Данные за все дни окна — строку о пропусках не показываем.
+    full = _stats(_report(covered=7))
+    report.check("без пропусков лишней строки нет", "из 7 дней" not in full)
+
+    nothing = _stats(history.Report())
+    report.check("пустая история объясняет себя", "появится завтра" in nothing)
+    report.check("пустой экран всё равно с рамкой", "СТАТИСТИКА" in nothing)
+    chunks.append(f"\n=== СТАТИСТИКА БЕЗ ДАННЫХ ===\n{nothing}")
+
+    report.section("Статистика помещается в окно")
+    # Резюме заведомо больше, чем строк: разбивка обязана обрезаться, а не
+    # выдавливать панель за край. Правило то же, что у таблицы резюме.
+    for width, height in SIZES:
+        text = _stats(_report(count=12), width, height)
+        lines = [line.rstrip() for line in text.splitlines()]
+        report.check(f"{width}x{height}: статистика не вылезает", len(lines) <= height
+                     and not [ln for ln in lines if len(ln) > width])
+        report.check(f"{width}x{height}: панель замкнута", "╰" in text or "└" in text)
+        report.check(f"{width}x{height}: главное число на месте", "+85" in text)
+        report.check(f"{width}x{height}: пустых панелей нет", not _empty_panels(text))
+
+    # Об обрезанной разбивке экран сообщает, а не молчит.
+    cramped = _stats(_report(count=12), 100, 32)
+    report.check("обрезанная разбивка сообщает об этом", "…и ещё" in cramped,
+                 "-> нет строки «…и ещё N»")
+
     report.section("В интерфейсе нет символов с эмодзи-начертанием")
-    everywhere = _render(lambda b: None, snap, log, 120, 40) + help_text + offline_text
+    everywhere = (_render(lambda b: None, snap, log, 120, 40)
+                  + help_text + offline_text + shown + nothing)
     found = sorted({ch for ch in everywhere if _emoji_capable(ch)})
     report.check("эмодзи-символов на экране нет", not found,
                  f"-> {[hex(ord(c)) for c in found]}")

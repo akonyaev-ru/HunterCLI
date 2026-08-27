@@ -8,6 +8,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from . import history
 from .config import Account
 from .hh import HHClient, HHError, NetworkError, Resume, TokenError
 from .logbus import LogBus, TaggedLog
@@ -306,6 +307,10 @@ class BumpEngine:
                 self.account.person_id = person_id or self.account.person_id
                 self.account.save()
 
+        # Срез просмотров за сегодня. Точка одна на сутки, синхронизаций
+        # много — каждая просто уточняет её свежим значением.
+        history.record_views(self.account.uid, fresh)
+
         if not fresh:
             self.log.warn("На аккаунте не найдено ни одного резюме")
         else:
@@ -337,6 +342,7 @@ class BumpEngine:
                     resume.problem = ""
                     resume.retry_after = 0.0
                 self.account.stats.record_bump(resume.title, moment)
+                history.record_bump(self.account.uid)
                 self.log.ok(f"«{resume.title}» поднято в поиске")
             else:
                 self.account.stats.failed_bumps += 1

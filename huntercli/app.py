@@ -13,7 +13,7 @@ import time
 from rich.console import Console
 from rich.live import Live
 
-from . import __version__, APP_NAME, auth, config, paths, power, winconsole
+from . import __version__, APP_NAME, auth, config, history, paths, power, winconsole
 from .config import MAX_ACCOUNTS, Account
 from .engine import BumpEngine, Phase, Snapshot
 from .hh import HHClient, HHError
@@ -33,6 +33,7 @@ KEY_HELP = {"h", "р", "?"}
 KEY_LOG = {"l", "д"}
 KEY_ADD = {"n", "т"}
 KEY_DROP = {"d", "в"}
+KEY_STATS = {"s", "ы"}
 
 #: Заголовок окна, пока дашборда нет: приветствие, вход, прощание.
 IDLE_TITLE = f"{APP_NAME} {__version__}"
@@ -316,6 +317,7 @@ class HunterApp:
 
         self.cfg.drop_account(index)
         auth.forget_session(uid)
+        history.forget(uid)
         # Аккаунтов не бывает ноль: на месте последнего остаётся пустая
         # вкладка, и программа попросит войти заново.
         while len(self.engines) < len(self.cfg.accounts):
@@ -370,8 +372,9 @@ class HunterApp:
         lowered = key.lower()
 
         if key == "\x1b":  # Esc
-            if self.dashboard.show_help:
+            if self.dashboard.show_help or self.dashboard.show_stats:
                 self.dashboard.show_help = False
+                self.dashboard.show_stats = False
             self._drop_asked_until = 0.0
             return None
         if key == "\x03":  # Ctrl+C внутри raw-режима
@@ -388,6 +391,10 @@ class HunterApp:
             return "quit"
         if lowered in KEY_HELP:
             self.dashboard.show_help = not self.dashboard.show_help
+            self.dashboard.show_stats = False
+            return None
+        if lowered in KEY_STATS:
+            self._toggle_stats()
             return None
         if lowered in KEY_SYNC:
             self.engine.request_sync()
@@ -418,12 +425,25 @@ class HunterApp:
             return None
         return None
 
+    def _toggle_stats(self) -> None:
+        """Открыть или закрыть статистику.
+
+        Сводка считается один раз при открытии: данные меняются раз в
+        четверть часа, а кадров восемь в секунду.
+        """
+        self.dashboard.show_stats = not self.dashboard.show_stats
+        self.dashboard.show_help = False
+        if self.dashboard.show_stats:
+            self.dashboard.stats = history.report(self.account.uid)
+
     def _switch_tab(self, step: int) -> None:
         if len(self.cfg.accounts) < 2:
             self.dashboard.toast("Аккаунт пока один. Ещё один — клавишей N.")
             return
         self.cfg.active = (self.cfg.active + step) % len(self.cfg.accounts)
         self._drop_asked_until = 0.0
+        if self.dashboard.show_stats:
+            self.dashboard.stats = history.report(self.account.uid)
         self.dashboard.toast(f"Вкладка {self.cfg.active + 1}: {self._label(self.cfg.active)}")
 
     def _ask_drop(self) -> str | None:

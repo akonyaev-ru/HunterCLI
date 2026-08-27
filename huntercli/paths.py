@@ -17,6 +17,7 @@ import sys
 
 CONFIG_NAME = "config.json"
 LOG_NAME = "hunter.log"
+HISTORY_NAME = "stats.json"
 
 
 def base_dir() -> str:
@@ -43,6 +44,15 @@ def config_path() -> str:
 
 def log_path() -> str:
     return os.path.join(state_dir(), LOG_NAME)
+
+
+def history_path() -> str:
+    """История просмотров.
+
+    Отдельно от конфига: там миграции схемы и зашифрованные доступы, а
+    здесь открытые числа, которые не жалко.
+    """
+    return os.path.join(state_dir(), HISTORY_NAME)
 
 
 def handoff_path() -> str:

@@ -14,7 +14,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from .. import APP_NAME
+from .. import APP_NAME, history
 from ..engine import PHASE_LABEL, Phase, Snapshot
 from ..logbus import ERROR, LogBus, OK, STEP, WARN
 from . import banner
@@ -91,6 +91,7 @@ HOTKEYS = [
     ("N", "ещё аккаунт"),
     ("1-9", "вкл/выкл резюме"),
     ("H", "справка"),
+    ("S", "статистика"),
 ]
 
 #: Подсказки, которые нужны только когда аккаунтов несколько.
@@ -143,7 +144,7 @@ HELP_SECTIONS: list[tuple[str, list[tuple[str, str]], int]] = [
             ("Tab", "следующая вкладка, Shift+Tab — предыдущая"),
             ("D", "отключить аккаунт открытой вкладки"),
             ("1…9", "включить или выключить резюме под номером в таблице"),
-            ("L", "открыть файл журнала рядом с программой"),
+            ("S / L", "статистика просмотров · файл журнала"),
             ("H", "закрыть эту справку"),
         ],
         0,
@@ -184,6 +185,22 @@ def window_title(snap: Snapshot, account: str = "") -> str:
     return f"{state} — {APP_NAME}"
 
 
+def _signed(value: int) -> str:
+    """Прирост всегда со знаком: «85» и «+85» читаются по-разному."""
+    return f"{value:+d}"
+
+
+def _decimal(value: float) -> str:
+    """Дробное по-русски, через запятую."""
+    return f"{value:.1f}".replace(".", ",")
+
+
+def _day(iso: str) -> str:
+    """`2026-08-20` -> `20.08`. Пустое остаётся пустым."""
+    parts = iso.split("-")
+    return f"{parts[2]}.{parts[1]}" if len(parts) == 3 else iso
+
+
 def _rule(width: int) -> Text:
     """Градиентная линия-разделитель ровно на всю ширину."""
     width = max(1, width)
@@ -216,6 +233,11 @@ class Dashboard:
         self.log = log
         self.tick = 0
         self.show_help = False
+        self.show_stats = False
+        #: Сводка для экрана статистики. Считает её приложение при открытии:
+        #: данные меняются раз в четверть часа, каждый кадр их пересчитывать
+        #: незачем.
+        self.stats: history.Report | None = None
         self._toast = ""
         self._toast_until = 0.0
 
@@ -618,6 +640,70 @@ class Dashboard:
         return _panel(grid, "СПРАВКА", hot=True)
 
     @staticmethod
+    def _stats_rows(report: "history.Report | None", room: int) -> list[tuple[str, str]]:
+        """Сводка под доступную высоту. Пустая правая колонка = заголовок.
+
+        Первым идёт то, ради чего экран открывают: что принесла неделя.
+        Разбивка по резюме обрезается снизу, но молчать об обрезке нельзя —
+        то же правило, что у таблицы резюме на главном экране.
+        """
+        if report is None or report.empty:
+            return [
+                ("Пока не о чем рассказать", ""),
+                ("Прирост считается разностью суточных срезов:", ""),
+                ("первый уже сделан, сводка появится завтра.", ""),
+            ][:max(1, room)]
+
+        rows: list[tuple[str, str]] = [(f"За {report.days} дней", "")]
+        rows.append(("Просмотров", _signed(report.views)))
+        change = report.change
+        rows.append(("К прошлой неделе", _signed(change) if change else "столько же"))
+        rows.append(("Поднятий", str(report.bumps)))
+        per_bump = report.per_bump
+        rows.append(("На одно поднятие", _decimal(per_bump) if per_bump is not None else "—"))
+        # О пропусках говорим, только когда они есть: строка на счету.
+        if report.covered < report.days:
+            rows.append(("Данные за", f"{report.covered} из {report.days} дней"))
+
+        # Разбивка помещается не всегда: заголовок, хотя бы одно резюме и
+        # отбивка перед ними — это четыре строки.
+        if room >= len(rows) + 4:
+            rows.append(("", ""))
+            rows.append(("По резюме", ""))
+            free = room - len(rows)
+            shown = report.resumes
+            if len(shown) > free:
+                # Место под строку «и ещё N» отнимаем у самих резюме.
+                shown = shown[:max(0, free - 1)]
+            for item in shown:
+                rows.append((item.title, f"{_signed(item.views)} · всего {item.total}"))
+            hidden = len(report.resumes) - len(shown)
+            if hidden > 0:
+                rows.append((f"…и ещё {hidden}", ""))
+
+        if room >= len(rows) + 3:
+            rows.append(("", ""))
+            rows.append(("Всего просмотров", str(report.total_views)))
+            rows.append(("Наблюдаем с", _day(report.since)))
+        return rows[:room]
+
+    def _stats_panel(self, height: int) -> RenderableType:
+        # expand=True обязателен: без него grid ужимается по содержимому,
+        # ratio у первой колонки не действует и значения виснут посередине.
+        grid = Table.grid(padding=(0, 2), expand=True)
+        grid.add_column(ratio=1, overflow="ellipsis", no_wrap=True)
+        grid.add_column(justify="right", no_wrap=True)
+        for label, value in self._stats_rows(self.stats, max(3, height - 2)):
+            if not label and not value:
+                grid.add_row("", "")
+            elif not value:
+                grid.add_row(Text(label, style=f"bold {ACCENT}"), "")
+            else:
+                grid.add_row(Text(label, style=MUTED), Text(value, style="bold white"))
+        return _panel(grid, "СТАТИСТИКА", hot=True)
+
+
+    @staticmethod
     def _tab_name(index: int, tab: TabInfo, limit: int = TAB_NAME_LIMIT) -> str:
         """Подпись вкладки. Имя владельца известно не сразу — до тех пор номер."""
         name = tab.label.strip() or f"Аккаунт {index + 1}"
@@ -753,6 +839,8 @@ class Dashboard:
 
         if self.show_help:
             root["body"].update(self._help_panel(body_height))
+        elif self.show_stats:
+            root["body"].update(self._stats_panel(body_height))
         elif wide:
             side_width = 34 if width >= 108 else 30
             root["body"].split_row(

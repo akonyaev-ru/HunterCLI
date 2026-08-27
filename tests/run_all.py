@@ -21,6 +21,7 @@ MODULES = [
     "test_no_branding",
     "test_auth",
     "test_webview_flow",
+    "test_history",
     "test_engine",
     "test_accounts",
 ]
