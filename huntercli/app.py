@@ -13,13 +13,13 @@ import time
 from rich.console import Console
 from rich.live import Live
 
-from . import __version__, auth, config, paths, power, winconsole
+from . import __version__, APP_NAME, auth, config, paths, power, winconsole
 from .config import MAX_ACCOUNTS, Account
-from .engine import BumpEngine, Phase
+from .engine import BumpEngine, Phase, Snapshot
 from .hh import HHClient, HHError
 from .logbus import LogBus, TaggedLog
 from .ui import screens
-from .ui.dashboard import Dashboard, TabInfo
+from .ui.dashboard import Dashboard, TabInfo, window_title
 from .ui.keys import SHIFT_TAB, KeyReader
 from .ui.theme import ACCENT, MUTED, THEME, WARN
 
@@ -33,6 +33,9 @@ KEY_HELP = {"h", "р", "?"}
 KEY_LOG = {"l", "д"}
 KEY_ADD = {"n", "т"}
 KEY_DROP = {"d", "в"}
+
+#: Заголовок окна, пока дашборда нет: приветствие, вход, прощание.
+IDLE_TITLE = f"{APP_NAME} {__version__}"
 
 FRAME_DELAY = 0.12
 MIN_HEIGHT = 14
@@ -58,6 +61,7 @@ class HunterApp:
         self._started_at = time.time()
         self._awake_held = False
         self._drop_asked_until = 0.0
+        self._title = ""
 
     # ---------------------------------------------------------- аккаунты
 
@@ -131,6 +135,7 @@ class HunterApp:
                     continue
 
                 outcome = self._session()
+                self._show_title(IDLE_TITLE)
                 if outcome == "quit":
                     break
                 if outcome == "reauth-manual":
@@ -149,6 +154,7 @@ class HunterApp:
                 engine.join()
             self._release_awake()
             self.cfg.save()
+            self._show_title(IDLE_TITLE)
 
         screens.farewell(
             self.console,
@@ -159,10 +165,22 @@ class HunterApp:
         return code
 
     def _prepare_console(self) -> None:
-        winconsole.set_title(f"Hunter CLI {__version__}")
+        self._show_title(IDLE_TITLE)
         # Значок берёт классическое окно консоли. Windows Terminal показывает
         # свой и менять его не даёт — это его устройство, не наша недоработка.
         winconsole.set_console_icon()
+
+    def _sync_title(self, snap: Snapshot) -> None:
+        """Заголовок окна — всё, что видно от свёрнутой программы."""
+        account = self._label(self.cfg.active) if len(self.engines) > 1 else ""
+        self._show_title(window_title(snap, account))
+
+    def _show_title(self, title: str) -> None:
+        """Обращаемся к Windows только когда заголовок вправду изменился."""
+        if title == self._title:
+            return
+        self._title = title
+        winconsole.set_title(title)
 
     def _hold_awake(self) -> None:
         """Запрет засыпания — один на программу, а не на каждый аккаунт.
@@ -327,6 +345,7 @@ class HunterApp:
                     return "reauth"
 
                 snap = self.engine.snapshot()
+                self._sync_title(snap)
                 width, height = self.console.size
                 if height < MIN_HEIGHT or width < MIN_WIDTH:
                     live.update(

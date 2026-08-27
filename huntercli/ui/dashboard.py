@@ -159,6 +159,31 @@ HELP_SECTIONS: list[tuple[str, list[tuple[str, str]], int]] = [
 ]
 
 
+def window_title(snap: Snapshot, account: str = "") -> str:
+    """Заголовок окна: состояние автопилота одной строкой.
+
+    Окно бывает свёрнуто весь рабочий день, и в панели задач от программы
+    видно только заголовок. Поэтому в нём то же, ради чего окно
+    разворачивают: сколько осталось до поднятия и не встал ли автопилот.
+    Состояние идёт первым — панель задач обрезает заголовок справа.
+    """
+    if snap.paused:
+        state = "пауза"
+    elif snap.phase == Phase.OFFLINE:
+        state = "нет сети"
+    elif snap.phase == Phase.AUTH:
+        state = "нужен вход"
+    elif snap.phase == Phase.BUMPING:
+        state = "поднимаем"
+    elif snap.phase == Phase.WAITING and snap.next_action_at is not None:
+        state = f"через {human_span(snap.next_action_at - time.time())}"
+    else:
+        state = PHASE_LABEL.get(snap.phase, snap.phase).lower()
+    if account:
+        state = f"{account} · {state}"
+    return f"{state} — {APP_NAME}"
+
+
 def _rule(width: int) -> Text:
     """Градиентная линия-разделитель ровно на всю ширину."""
     width = max(1, width)

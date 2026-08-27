@@ -18,10 +18,11 @@ sandbox()
 
 from rich.console import Console
 
+from huntercli import APP_NAME
 from huntercli.engine import Phase, Snapshot
 from huntercli.hh import Resume
 from huntercli.logbus import LogBus
-from huntercli.ui.dashboard import Dashboard, TabInfo
+from huntercli.ui.dashboard import Dashboard, TabInfo, window_title
 from huntercli.ui.theme import MUTED, THEME
 
 #: Ряд намеренно доходит до минимума, который принимает app.py (58x14):
@@ -294,6 +295,50 @@ def run() -> bool:
 
     toast = _render(lambda b: b.toast("Поднимаем всё, что сейчас разрешено..."), snap, log, 120, 40)
     report.check("всплывающая подсказка показывается", "Поднимаем всё" in toast)
+
+    report.section("Заголовок окна")
+    # Окно бывает свёрнуто весь день, и в панели задач видно один заголовок.
+    def titled(**changes) -> str:
+        state = _demo_snapshot()
+        for name, value in changes.items():
+            setattr(state, name, value)
+        return window_title(state)
+
+    waiting = window_title(snap)
+    report.check("в ожидании виден отсчёт", "через" in waiting, f"-> {waiting!r}")
+    report.check("название программы на месте", waiting.endswith(APP_NAME), f"-> {waiting!r}")
+    # Панель задач обрезает справа, поэтому состояние обязано идти первым.
+    report.check("состояние раньше названия",
+                 waiting.index("через") < waiting.index(APP_NAME), f"-> {waiting!r}")
+    report.check("с одним аккаунтом имени нет", "Алексей" not in waiting, f"-> {waiting!r}")
+
+    named = window_title(snap, "Алексей К.")
+    report.check("с несколькими аккаунтами имя впереди",
+                 named.startswith("Алексей К.") and "через" in named, f"-> {named!r}")
+
+    report.check("пауза видна", "пауза" in titled(paused=True))
+    report.check("обрыв связи виден", "нет сети" in titled(phase=Phase.OFFLINE))
+    report.check("требование входа видно", "нужен вход" in titled(phase=Phase.AUTH))
+    report.check("поднятие видно", "поднимаем" in titled(phase=Phase.BUMPING))
+    # Пауза важнее отсчёта: иначе свёрнутое окно врёт, что автопилот работает.
+    report.check("пауза перебивает отсчёт", "через" not in titled(paused=True))
+    # Ждём, но время следующего действия ещё не известно.
+    report.check("без срока — просто состояние",
+                 titled(next_action_at=None) == f"мониторинг — {APP_NAME}",
+                 f"-> {titled(next_action_at=None)!r}")
+    report.check("незнакомая фаза не роняет", APP_NAME in titled(phase="выдумка"))
+
+    later = titled(next_action_at=time.time() + 60)
+    report.check("отсчёт идёт", later != waiting, f"-> {later!r}")
+
+    # SetConsoleTitleW принимает одну строку, разметка Rich туда не годится.
+    every = [waiting, named, later, titled(paused=True), titled(phase=Phase.AUTH)]
+    breaks = (chr(10), chr(13))
+    report.check("заголовок однострочный",
+                 not any(ch in t for t in every for ch in breaks))
+    report.check("разметки Rich в заголовке нет", not any("[" in t for t in every))
+    report.check("названия площадки в заголовке нет",
+                 not any("hh" in t.lower() for t in every))
 
     report.section("В интерфейсе нет символов с эмодзи-начертанием")
     everywhere = _render(lambda b: None, snap, log, 120, 40) + help_text + offline_text
