@@ -83,13 +83,16 @@ def _account(data: dict[str, Any], uid: str) -> dict[str, Any]:
 
 
 def _prune(entry: dict[str, Any], now: str) -> None:
+    # Ключей может не быть вовсе: уборка способна отработать раньше первого
+    # среза просмотров, и тогда запись об аккаунте ещё пустая.
     edge = _shift(now, -KEEP_DAYS)
-    for resume in entry["resumes"].values():
+    for resume in (entry.get("resumes") or {}).values():
         for series in ("days", "invites"):
             if series in resume:
                 resume[series] = {d: v for d, v in (resume.get(series) or {}).items() if d >= edge}
-    entry["bumps"] = {d: v for d, v in entry["bumps"].items() if d >= edge}
-    entry["talks"] = {d: v for d, v in (entry.get("talks") or {}).items() if d >= edge}
+    for series in ("bumps", "talks", "cleanup"):
+        if series in entry:
+            entry[series] = {d: v for d, v in (entry.get(series) or {}).items() if d >= edge}
 
 
 def record_views(uid: str, resumes: Iterable[Any], *, now: str = "") -> bool:
@@ -152,6 +155,31 @@ def needs_talks(uid: str, *, now: str = "") -> bool:
     now = now or today()
     entry = load().get("accounts", {}).get(uid) or {}
     return now not in (entry.get("talks") or {})
+
+
+def needs_cleanup(uid: str, *, now: str = "") -> bool:
+    """Пора ли убирать мёртвые обращения. Раз в сутки, как и пересчёт.
+
+    Отдельная отметка, а не общая с `talks`: пересчёт статистики может пройти,
+    а уборка упасть на сети, и тогда она обязана повториться завтра, а не
+    считаться сделанной.
+    """
+    now = now or today()
+    entry = load().get("accounts", {}).get(uid) or {}
+    return now not in (entry.get("cleanup") or {})
+
+
+def record_cleanup(uid: str, hidden: int, *, now: str = "") -> bool:
+    """Запомнить, что сегодня уборка прошла, и сколько скрыто."""
+    now = now or today()
+    with _LOCK:
+        data = load()
+        entry = data.setdefault("accounts", {}).setdefault(uid, {})
+        days = entry.setdefault("cleanup", {})
+        days[now] = int(days.get(now, 0)) + int(hidden)
+        entry["hidden_total"] = int(entry.get("hidden_total", 0)) + int(hidden)
+        _prune(entry, now)
+        return save(data)
 
 
 def record_talks(uid: str, talks: Any, *, now: str = "") -> bool:

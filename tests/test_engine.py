@@ -55,6 +55,32 @@ class FakeHH:
         ]
         self.talks_calls: list[int] = []
         self.talks_broken = False
+        # Коллекция active: та, где живут приглашения и кандидаты на уборку.
+        # У настоящего сервиса в ней три десятка обращений против четырёх
+        # сотен во всех, и запрашивается она одной страницей.
+        day = 86400
+        stamp = lambda ago: time.strftime(
+            "%Y-%m-%dT%H:%M:%S+0300", time.localtime(time.time() - ago * day))
+        self.active_items = [
+            {"id": "n1", "state": {"id": "invitation"}, "read": False,
+             "updated_at": stamp(1), "vacancy": {"name": "Юрист",
+                                                 "employer": {"name": "Ромашка"}}},
+            {"id": "n2", "state": {"id": "invitation"}, "read": True,
+             "updated_at": stamp(9), "vacancy": {"name": "Юрист-2",
+                                                 "employer": {"name": "Ромашка"}}},
+            {"id": "n3", "state": {"id": "discard"}, "read": True,
+             "updated_at": stamp(2), "vacancy": {"name": "Отказали",
+                                                 "employer": {"name": "Одуванчик"}}},
+            {"id": "n4", "state": {"id": "response"}, "read": True,
+             "updated_at": stamp(400), "vacancy": {"name": "Висяк",
+                                                   "employer": {"name": "Лопух"}}},
+            {"id": "n5", "state": {"id": "response"}, "read": True,
+             "updated_at": stamp(3), "vacancy": {"name": "Свежий",
+                                                 "employer": {"name": "Клевер"}}},
+        ]
+        self.active_calls = 0
+        self.hidden: list[str] = []
+        self.hide_code = 204
 
 
 STATE = FakeHH()
@@ -89,7 +115,15 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.startswith("/negotiations"):
             from urllib.parse import parse_qs, urlparse
 
-            page = int((parse_qs(urlparse(self.path).query).get("page") or ["0"])[0])
+            query = parse_qs(urlparse(self.path).query)
+            if (query.get("status") or [""])[0] == "active":
+                with STATE.lock:
+                    STATE.active_calls += 1
+                    items = [dict(it) for it in STATE.active_items
+                             if it["id"] not in STATE.hidden]
+                return self._send(200, {"items": items, "found": len(items),
+                                        "pages": 1, "page": 0, "per_page": 100})
+            page = int((query.get("page") or ["0"])[0])
             with STATE.lock:
                 STATE.talks_calls.append(page)
                 if STATE.talks_broken:
@@ -126,6 +160,24 @@ class Handler(BaseHTTPRequestHandler):
             if item:
                 item["can_publish_or_update"] = False
                 item["next_publish_at"] = _iso(4 * 3600)
+        return self._send(204)
+
+    def do_DELETE(self):
+        if not self._authorized():
+            return self._send(403, {"description": "Forbidden",
+                                    "errors": [{"value": "bad_authorization",
+                                                "type": "oauth"}]})
+        # Скрытие живёт только по коллекции active — проверено пробой у
+        # настоящего сервиса: другие имена коллекций DELETE не принимают.
+        if not self.path.startswith("/negotiations/active/"):
+            return self._send(405, {"errors": [{"value": "", "type": "method_not_allowed"}]})
+        talk_id = self.path.rsplit("/", 1)[-1]
+        with STATE.lock:
+            if STATE.hide_code != 204:
+                return self._send(STATE.hide_code,
+                                  {"errors": [{"value": "collection",
+                                               "type": "bad_argument"}]})
+            STATE.hidden.append(talk_id)
         return self._send(204)
 
 
@@ -215,6 +267,44 @@ def run() -> bool:
                      f"-> {talks_report.discards}")
         report.check("страниц запрошено ровно две", STATE.talks_calls == [0, 1],
                      f"-> {STATE.talks_calls}")
+
+        report.section("Приглашение замечается сразу")
+        # В коллекции active два приглашения, но прочитанное человек уже видел.
+        snap = engine.snapshot()
+        report.check("непрочитанное приглашение сосчитано",
+                     snap.invitations_pending == 1, f"-> {snap.invitations_pending}")
+        report.check("прочитанное приглашение не считается",
+                     snap.invitations_pending < 2, f"-> {snap.invitations_pending}")
+        report.check("про приглашение сказано в журнале",
+                     any("Приглашение!" in e.text for e in engine.log.tail(200)))
+        report.check("активная коллекция берётся одним запросом, а не перебором",
+                     STATE.active_calls >= 1 and STATE.talks_calls == [0, 1],
+                     f"-> active={STATE.active_calls}, полный={STATE.talks_calls}")
+
+        report.section("Мёртвые обращения убираются")
+        _wait_for(lambda: len(STATE.hidden) >= 2)
+        report.check("отказ убран", "n3" in STATE.hidden, f"-> {STATE.hidden}")
+        report.check("висяк старше срока убран", "n4" in STATE.hidden, f"-> {STATE.hidden}")
+        report.check("свежий отклик не тронут", "n5" not in STATE.hidden, f"-> {STATE.hidden}")
+        # Главное правило: приглашения не скрываются ни при каких настройках.
+        report.check("непрочитанное приглашение не тронуто",
+                     "n1" not in STATE.hidden, f"-> {STATE.hidden}")
+        report.check("прочитанное приглашение тоже не тронуто",
+                     "n2" not in STATE.hidden, f"-> {STATE.hidden}")
+        report.check("каждое скрытие названо в журнале",
+                     sum("Убрано из активных" in e.text for e in engine.log.tail(200)) == 2,
+                     f"-> {[e.text for e in engine.log.tail(200) if 'Убрано' in e.text]}")
+        report.check("причина скрытия указана",
+                     any("отказ" in e.text for e in engine.log.tail(200))
+                     and any("без ответа" in e.text for e in engine.log.tail(200)))
+        report.check("приглашение осталось в заголовке после уборки",
+                     engine.snapshot().invitations_pending == 1)
+
+        before_hidden = list(STATE.hidden)
+        engine.request_sync()
+        time.sleep(3)
+        report.check("за сутки убираем один раз", STATE.hidden == before_hidden,
+                     f"-> {STATE.hidden}")
         by_resume = {item.title: item.invitations for item in talks_report.resumes}
         report.check("приглашения привязаны к резюме", by_resume.get("Юрист") == 2,
                      f"-> {by_resume}")
@@ -253,6 +343,37 @@ def run() -> bool:
         report.check("поднятия идут своим чередом",
                      len(STATE.publish_calls) > before_calls,
                      f"-> было {before_calls}, стало {len(STATE.publish_calls)}")
+
+        report.section("Страховки уборки")
+        # Выключатель: скрытие необратимо, поэтому передумать можно только
+        # заранее — и способ обязан работать без пересборки.
+        STATE.hidden.clear()
+        engine5, account5, _ = _make_engine("GOOD-TOKEN")
+        account5.settings.cleanup_enabled = False
+        engine5.start()
+        _wait_for(lambda: engine5.snapshot().invitations_pending == 1, 30)
+        report.check("с выключенной уборкой приглашения всё равно видны",
+                     engine5.snapshot().invitations_pending == 1)
+        report.check("с выключенной уборкой ничего не скрыто", STATE.hidden == [],
+                     f"-> {STATE.hidden}")
+        engine5.stop()
+        engine5.join()
+
+        # Отказ по самой операции (не тот метод, не та коллекция) означает, что
+        # сломано всё: программа обязана перестать долбить, а не ходить по кругу.
+        STATE.hidden.clear()
+        STATE.hide_code = 400
+        engine6, account6, log6 = _make_engine("GOOD-TOKEN")
+        engine6.start()
+        _wait_for(lambda: engine6._cleanup_broken, 30)
+        report.check("сломанная уборка отключает себя", engine6._cleanup_broken)
+        report.check("и говорит об этом один раз",
+                     sum("Уборка отключена" in e.text for e in log6.tail(200)) == 1,
+                     f"-> {[e.text for e in log6.tail(200) if 'Уборка' in e.text]}")
+        report.check("ничего не скрыто при поломке", STATE.hidden == [], f"-> {STATE.hidden}")
+        engine6.stop()
+        engine6.join()
+        STATE.hide_code = 204
 
         report.section("Пауза и выбор резюме")
         report.check("пауза включается", engine.toggle_pause() is True)
@@ -309,6 +430,7 @@ def run() -> bool:
         engine3.stop()
         engine3.join()
 
+
         report.section("Сеть пропала")
         server.shutdown()
         server.server_close()
@@ -322,6 +444,7 @@ def run() -> bool:
         report.check("вход заново не требует", not engine4.auth_needed)
         engine4.stop()
         engine4.join()
+
     finally:
         hh.API_ROOT, auth.refresh_token = real_api_root, real_refresh
         try:

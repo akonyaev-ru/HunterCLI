@@ -10,7 +10,7 @@ from datetime import datetime
 
 from . import history
 from .config import Account
-from .hh import HHClient, HHError, NetworkError, Resume, TokenError
+from .hh import ActiveTalk, HHClient, HHError, NetworkError, Resume, TokenError
 from .logbus import LogBus, TaggedLog
 from .power import SleepDetector, WakeTimer
 
@@ -74,6 +74,10 @@ class Snapshot:
     token_seconds_left: float = 0.0
     paused: bool = False
     offline_since: float | None = None
+    #: Сколько приглашений пришло и ещё не отмечено прочитанными на hh.ru.
+    #: Ноль — показывать нечего. Живёт в слепке, а не в движке, потому что
+    #: заголовок окна собирается из слепка и больше ниоткуда.
+    invitations_pending: int = 0
 
     @property
     def managed_count(self) -> int:
@@ -121,6 +125,12 @@ class BumpEngine:
         self._force_bump = False
         self._auth_needed = False
         self._backoff = 30.0
+        #: Сколько непрочитанных приглашений ждёт ответа. Отсюда берётся
+        #: заголовок окна: окно свёрнуто, и это единственное, что видно.
+        self._invitations_pending = 0
+        #: Уборка отказала по самой операции (не тот метод, не та коллекция).
+        #: Тогда повторять её незачем до перезапуска — только шуметь в журнале.
+        self._cleanup_broken = False
         #: Спрашивали ли уже, кто владелец аккаунта. Сервис мог и не ответить
         #: именем — тогда дёргать его каждую синхронизацию незачем.
         self._identified = False
@@ -203,6 +213,7 @@ class BumpEngine:
                 token_seconds_left=self.account.seconds_left,
                 paused=self._paused,
                 offline_since=self._offline_since,
+                invitations_pending=self._invitations_pending,
             )
 
     def brief(self) -> tuple[str, str]:
@@ -310,12 +321,101 @@ class BumpEngine:
         # Срез просмотров за сегодня. Точка одна на сутки, синхронизаций
         # много — каждая просто уточняет её свежим значением.
         history.record_views(self.account.uid, fresh)
+        self._scan_active()
         self._count_talks()
 
         if not fresh:
             self.log.warn("На аккаунте не найдено ни одного резюме")
         else:
             self.log.step(f"Синхронизация: резюме — {len(fresh)}, под автопилотом — {managed}")
+
+    def _scan_active(self) -> None:
+        """Активные обращения: приглашения и уборка — одним запросом.
+
+        Ради «сразу» это делается на каждой синхронизации, а не раз в сутки.
+        Цена — один запрос: в `active` три десятка обращений, они помещаются на
+        одну страницу. Полный перебор всех четырёх сотен (`_count_talks`)
+        остаётся суточным, он для статистики.
+
+        Как и статистика, эта работа вторична: её отказ не должен ронять
+        поднятие. А вот потерю доступа глушить нельзя.
+        """
+        try:
+            talks = self.client.active_negotiations()
+        except TokenError:
+            raise
+        except HHError as exc:
+            self.log.warn(f"Активные обращения прочитать не вышло: {exc}")
+            return
+
+        # Непрочитанное приглашение — то, о чём надо сказать. Прочитанное
+        # человек уже видел: снимаем с заголовка сами, без горячей клавиши.
+        pending = [talk for talk in talks if talk.is_invitation and not talk.read]
+        with self._lock:
+            was = self._invitations_pending
+            self._invitations_pending = len(pending)
+        if len(pending) > was:
+            new = len(pending) - was
+            self.log.ok(f"Приглашение! Новых — {new}, всего непрочитанных — {len(pending)}"
+                        if new > 1 else
+                        f"Приглашение! Непрочитанных — {len(pending)}")
+
+        self._cleanup(talks)
+
+    def _cleanup(self, talks: list[ActiveTalk]) -> None:
+        """Скрыть мёртвые обращения. Раз в сутки, в фоне, без подтверждения.
+
+        Решение владельца 2026-08-28: без подтверждения. Скрытие необратимо,
+        поэтому здесь две страховки, которые этому решению не противоречат —
+        потолок на проход и строка в журнале на каждое скрытие: вернуть не
+        даст, но узнать постфактум даст.
+        """
+        rules = self.account.settings
+        if not rules.cleanup_enabled or self._cleanup_broken:
+            return
+        if not history.needs_cleanup(self.account.uid):
+            return
+
+        now = time.time()
+        doomed: list[tuple[ActiveTalk, str]] = []
+        for talk in talks:
+            # Приглашения не трогаем никогда и ни при каких настройках.
+            if talk.is_invitation:
+                continue
+            if talk.state == "discard":
+                doomed.append((talk, "отказ"))
+            elif talk.state == "response":
+                idle = talk.stale_days(now)
+                if idle > rules.cleanup_stale_days:
+                    doomed.append((talk, f"без ответа {idle:.0f} дн"))
+
+        if not doomed:
+            history.record_cleanup(self.account.uid, 0)
+            return
+
+        cut = doomed[:max(0, rules.cleanup_max_per_run)]
+        hidden = 0
+        for talk, why in cut:
+            ok, detail = self.client.hide(talk.id)
+            if ok:
+                hidden += 1
+                where = " · ".join(part for part in (talk.employer, talk.vacancy) if part)
+                self.log.step(f"Убрано из активных: {where or talk.id} — {why}")
+                continue
+            # Единичный отказ переживаем и идём дальше. А вот отказ по самой
+            # операции (не тот метод, не та коллекция) означает, что сломано
+            # всё: перестаём долбить до перезапуска.
+            if detail and "not_found" not in detail:
+                self._cleanup_broken = True
+                self.log.warn(f"Уборка отключена до перезапуска: {detail}")
+                break
+            self.log.warn(f"Не вышло убрать обращение {talk.id}: {detail}")
+
+        history.record_cleanup(self.account.uid, hidden)
+        if hidden:
+            left = len(doomed) - len(cut)
+            tail = f", осталось на завтра — {left}" if left else ""
+            self.log.ok(f"Активный список почищен: убрано {hidden}{tail}")
 
     def _count_talks(self) -> None:
         """Пересчитать обращения к работодателям — раз в сутки, не чаще.

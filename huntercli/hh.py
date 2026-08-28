@@ -65,6 +65,8 @@ def parse_hh_time(value: str | None) -> datetime | None:
 
 #: Сколько обращений просим за раз. Сотня — потолок сервиса.
 TALKS_PAGE = 100
+#: Коллекция `active` — три десятка обращений, одной страницы хватает с запасом.
+ACTIVE_PAGE = 100
 #: Предохранитель от бесконечного цикла на неожиданном ответе: двадцать
 #: страниц — это две тысячи обращений, больше у соискателя не бывает.
 TALKS_MAX_PAGES = 20
@@ -90,6 +92,67 @@ class Talks:
     by_resume: dict[str, int] = field(default_factory=dict)
     #: id резюме -> сколько приглашений оно принесло.
     invitations_by_resume: dict[str, int] = field(default_factory=dict)
+
+
+@dataclass
+class ActiveTalk:
+    """Обращение из коллекции `active` — той, где идёт живая работа.
+
+    Всего обращений может быть под четыре сотни (проверено: 356 на 2026-08-28),
+    но в `active` их три десятка: остальное сервис уводит в архив сам. Важно,
+    что скрытие работает ТОЛЬКО по этой коллекции (см. `hide`), поэтому и
+    уборка, и поиск приглашений идут по ней.
+    """
+
+    id: str = ""
+    state: str = ""
+    #: Прочитано ли обращение владельцем. Непрочитанное приглашение — это то,
+    #: о чём надо сказать сразу; прочитанное человек уже видел.
+    read: bool = True
+    updated_at: float = 0.0
+    #: Название вакансии и работодателя — только для строки журнала об уборке.
+    vacancy: str = ""
+    employer: str = ""
+
+    @property
+    def is_invitation(self) -> bool:
+        return self.state == "invitation"
+
+    def stale_days(self, now: float) -> float:
+        """Сколько суток не было движения. Без отметки времени — ноль."""
+        return max(0.0, (now - self.updated_at) / 86400) if self.updated_at else 0.0
+
+    @classmethod
+    def from_api(cls, raw: dict[str, Any]) -> "ActiveTalk":
+        state = raw.get("state")
+        vacancy = raw.get("vacancy") if isinstance(raw.get("vacancy"), dict) else {}
+        employer = vacancy.get("employer") if isinstance(vacancy.get("employer"), dict) else {}
+        return cls(
+            id=str(raw.get("id") or ""),
+            state=str((state or {}).get("id") or "") if isinstance(state, dict) else "",
+            read=bool(raw.get("read", True)),
+            updated_at=_stamp(raw.get("updated_at") or raw.get("created_at")),
+            vacancy=str(vacancy.get("name") or ""),
+            employer=str(employer.get("name") or ""),
+        )
+
+
+def _stamp(value: Any) -> float:
+    """`2026-08-28T09:39:44+0300` -> unix. Мусор и пустое — ноль.
+
+    Сервис отдаёт смещение без двоеточия; `fromisoformat` до 3.11 такое не
+    принимал, поэтому разбираем защитно и молча сдаёмся на непонятном.
+    """
+    if not isinstance(value, str) or not value:
+        return 0.0
+    try:
+        return datetime.fromisoformat(value).timestamp()
+    except ValueError:
+        pass
+    try:
+        return datetime.strptime(value[:19], "%Y-%m-%dT%H:%M:%S").timestamp()
+    except ValueError:
+        return 0.0
 
 
 @dataclass
@@ -355,6 +418,44 @@ class HHClient:
             if page + 1 >= int(data.get("pages") or 1):
                 break
         return talks
+
+    def active_negotiations(self) -> list[ActiveTalk]:
+        """Коллекция `active` одним запросом.
+
+        Почему не полный перебор: `negotiations()` листает ВСЕ обращения (4
+        запроса на 356 штук) и нужен для статистики раз в сутки. Здесь другое —
+        приглашения и кандидаты на уборку живут только в `active`, а их три
+        десятка, то есть одна страница.
+
+        Проверено 2026-08-28: `?status=active` и `?status=non_archived` дают то
+        же, что `/negotiations/active`; `?status=invitation` сервис отвергает
+        как `bad_argument`, отдельного фильтра под приглашения нет.
+        """
+        response = self._call("GET", "/negotiations",
+                              params={"status": "active", "per_page": ACTIVE_PAGE, "page": 0})
+        if response.status_code != 200:
+            detail = explain_errors(_json_or_none(response))
+            raise HHError(detail or f"на активные обращения пришёл код {response.status_code}")
+        data = _json_or_none(response) or {}
+        items = data.get("items")
+        return [ActiveTalk.from_api(item) for item in items
+                if isinstance(item, dict)] if isinstance(items, list) else []
+
+    def hide(self, talk_id: str) -> tuple[bool, str]:
+        """Скрыть обращение. Возвращает (успех, пояснение).
+
+        Метод и путь сняты пробой 2026-08-28 без токена: у
+        `/negotiations/active/{id}` принимаются PUT и DELETE (403), а GET, POST
+        и PATCH отвергаются (405). Ни одного другого имени коллекции DELETE не
+        принимает — то есть скрывать можно только из `active`.
+
+        Операция необратимая: вернуть скрытое обращение API не даёт.
+        """
+        response = self._call("DELETE", f"/negotiations/active/{talk_id}")
+        if response.status_code in (200, 204):
+            return True, ""
+        detail = explain_errors(_json_or_none(response))
+        return False, detail or f"код {response.status_code}"
 
     def publish(self, resume_id: str) -> tuple[bool, str]:
         """Поднять резюме. Возвращает (успех, пояснение)."""
