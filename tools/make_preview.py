@@ -24,6 +24,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -129,6 +130,18 @@ def build_log() -> LogBus:
     log.ok("Алексей К. · «Ведущий юрист по корпоративному праву» поднято в поиске")
     log.ok("Мария С. · «Финансовый аналитик» поднято в поиске")
     log.step("Мария С. · Токен доступа обновлён автоматически")
+
+    # Все записи родились в одну секунду, и на картинке колонка времени
+    # выглядела бы бесполезной: пять одинаковых отметок подряд. Разносим их
+    # по правдоподобному ходу событий — запуск, синхронизация, два поднятия
+    # с паузой, продление токена.
+    offsets = (0, 4, 9, 71, 96)
+    start = time.time() - offsets[-1]
+    entries = log._entries  # приватное поле: это генератор картинки, а не код программы
+    spaced = [replace(entry, at=start + shift)
+              for entry, shift in zip(entries, offsets)]
+    entries.clear()
+    entries.extend(spaced)
     return log
 
 

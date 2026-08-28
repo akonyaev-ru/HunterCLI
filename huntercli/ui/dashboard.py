@@ -72,6 +72,17 @@ PHASE_STYLE = {
     Phase.STOPPED: MUTED,
 }
 
+#: Знак аккаунта в полосе вкладок. Красить его фазой недостаточно: BUMPING
+#: (#F5232B) и AUTH (#FF5C5C) расходятся в RGB на 76, тогда как BUMPING и
+#: WAITING — на 269. То есть «поднимает прямо сейчас» и «вход слетел, нужен
+#: человек» — ближайшая пара в палитре, а по решению о заголовке окна
+#: (см. MEMORY.md, «не откатывать» №19) точка на вкладке остаётся единственным
+#: признаком слетевшего входа. Поэтому AUTH различается формой, а не оттенком:
+#: форма читается там, где цвет уже нет — на бледном мониторе и у дальтоника.
+#: Знак обязан быть одноячеечным и не из эмодзи-набора (см. LEVEL_MARK).
+PHASE_MARK = {Phase.AUTH: "!"}
+DEFAULT_TAB_MARK = "●"
+
 # Значки журнала. Только «текстовые» символы: U+2714 ✔ и U+2716 ✖ входят в
 # эмодзи-набор — терминал красит их своим цветом и занимает две ячейки вместо
 # одной, из-за чего строка съезжает. У U+2713 ✓ и U+2715 ✕ такой беды нет.
@@ -167,8 +178,19 @@ def window_title(snap: Snapshot, account: str = "") -> str:
     видно только заголовок. Поэтому в нём то же, ради чего окно
     разворачивают: сколько осталось до поднятия и не встал ли автопилот.
     Состояние идёт первым — панель задач обрезает заголовок справа.
+
+    Пришедшее приглашение старше всего остального, кроме «нужен вход»:
+    см. комментарий ниже.
     """
-    if snap.paused:
+    # Приглашение вытесняет отсчёт: отсчёт повторится через минуту, а
+    # работодателю отвечают первыми. Исключение одно — «нужен вход»: со
+    # слетевшим доступом программа и о следующих приглашениях не узнает,
+    # поэтому чинить надо сначала его. Само приглашение при этом никуда не
+    # девается: оно уже записано в журнал.
+    if snap.invitations_pending and snap.phase != Phase.AUTH:
+        state = ("Приглашение!" if snap.invitations_pending == 1
+                 else f"Приглашений: {snap.invitations_pending}")
+    elif snap.paused:
         state = "пауза"
     elif snap.phase == Phase.OFFLINE:
         state = "нет сети"
@@ -308,8 +330,8 @@ class Dashboard:
         roomy = width >= 74
         table.add_column("#", width=2, style=MUTED, justify="right")
         # Обрезкой заведует сам Rich: он один знает итоговую ширину колонки.
-        table.add_column("РЕЗЮМЕ", ratio=1, no_wrap=True, overflow="ellipsis", min_width=12)
-        table.add_column("СТАТУС", width=15 if roomy else 12, no_wrap=True, overflow="ellipsis")
+        table.add_column("НАЗВАНИЕ", ratio=1, no_wrap=True, overflow="ellipsis", min_width=12)
+        table.add_column("СОСТОЯНИЕ", width=15 if roomy else 12, no_wrap=True, overflow="ellipsis")
         if roomy:
             table.add_column("ПРОСМ.", width=9, justify="right", no_wrap=True)
         table.add_column("СЛЕДУЮЩЕЕ", width=11, justify="right", no_wrap=True)
@@ -404,8 +426,8 @@ class Dashboard:
             human_span(time.time() - snap.started_at, short=True), style="bold white")))
         entries.append((1, "Резюме", Text(
             f"{snap.managed_count} из {len(snap.resumes)}", style="bold white")))
-        entries.append((2, "За сеанс", Text(str(snap.session_bumps), style="bold white")))
-        entries.append((5, "Всего", Text(str(snap.total_bumps), style="bold white")))
+        entries.append((2, "Поднято за сеанс", Text(str(snap.session_bumps), style="bold white")))
+        entries.append((5, "Поднято всего", Text(str(snap.total_bumps), style="bold white")))
         entries.append((6, "Последнее", Text(
             datetime.fromtimestamp(snap.last_bump_at).strftime("%d.%m %H:%M")
             if snap.last_bump_at else "—", style="bold white")))
@@ -510,7 +532,7 @@ class Dashboard:
             facts.append(value, style=style)
 
         fact(f"{snap.managed_count}/{len(snap.resumes)} резюме", "bold white")
-        fact(f"за сеанс {snap.session_bumps}", "bold white")
+        fact(f"поднято за сеанс {snap.session_bumps}", "bold white")
         fact(f"всего {snap.total_bumps}", "bold white")
         if snap.token_seconds_left:
             fact(f"токен {snap.token_seconds_left / 86400:.0f} дн", MUTED)
@@ -752,7 +774,8 @@ class Dashboard:
         # Имена ужимаем под число вкладок: короткая подпись у всех полезнее,
         # чем полная у двоих и «+4» вместо всех остальных.
         limit = max(6, min(TAB_NAME_LIMIT, width // max(1, len(tabs)) - 6))
-        chunks = [f" ● {index + 1} {self._tab_name(index, tab, limit)} "
+        chunks = [f" {PHASE_MARK.get(tab.phase, DEFAULT_TAB_MARK)} {index + 1} "
+                  f"{self._tab_name(index, tab, limit)} "
                   for index, tab in enumerate(tabs)]
 
         # Начало сдвигаем ровно настолько, чтобы открытая вкладка поместилась:

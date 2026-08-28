@@ -22,7 +22,13 @@ from huntercli import APP_NAME, history
 from huntercli.engine import Phase, Snapshot
 from huntercli.hh import Resume
 from huntercli.logbus import LogBus
-from huntercli.ui.dashboard import Dashboard, TabInfo, window_title
+from huntercli.ui.dashboard import (
+    DEFAULT_TAB_MARK,
+    PHASE_MARK,
+    Dashboard,
+    TabInfo,
+    window_title,
+)
 from huntercli.ui.theme import MUTED, THEME
 
 #: Ряд намеренно доходит до минимума, который принимает app.py (58x14):
@@ -221,7 +227,9 @@ def run() -> bool:
             report.check(f"{mark}: ничего не вылезает за край",
                          not [ln for ln in lines if len(ln) > width])
             report.check(f"{mark}: высота не превышена", len(lines) <= height, f"-> {len(lines)}")
-            report.check(f"{mark}: открытая вкладка на месте", f"● {active + 1} " in text)
+            open_mark = PHASE_MARK.get(_tabs(3)[active].phase, DEFAULT_TAB_MARK)
+            report.check(f"{mark}: открытая вкладка на месте",
+                         f"{open_mark} {active + 1} " in text)
             report.check(f"{mark}: все панели закрыты", text.count("╭") == text.count("╰"))
             report.check(f"{mark}: в таблице есть первое резюме",
                          re.search(r"│\s+1\s+Ведущий", text) is not None)
@@ -239,6 +247,19 @@ def run() -> bool:
                  not [style for style in styles if " on " in style], f"-> {styles}")
     report.check("открытая вкладка белая", "bold white" in styles, f"-> {styles}")
     report.check("остальные серые", MUTED in styles, f"-> {styles}")
+
+    # Цвета BUMPING и AUTH почти совпадают, поэтому «нужен человек» обязано
+    # отличаться знаком: иначе слетевший вход у чужой вкладки ничем не выдаёт
+    # себя — заголовок окна о нём молчит намеренно.
+    marked = _render(lambda b: None, snap, log, 120, 40, _tabs(3), 0)
+    report.check("слетевший вход помечен своим знаком", "! 3 " in marked,
+                 "-> нет «! 3 » в полосе вкладок")
+    report.check("работающие вкладки помечены обычным знаком",
+                 "● 1 " in marked and "● 2 " in marked)
+    report.check("знак слетевшего входа одноячеечный и не эмодзи",
+                 all(mark not in EMOJI_BMP and len(mark) == 1
+                     for mark in PHASE_MARK.values()),
+                 f"-> {PHASE_MARK}")
 
     crowd = _render(lambda b: None, snap, log, 120, 40, _tabs(5), 4)
     report.check("подсказка о вкладках появляется вместе с ними", "вкладка" in crowd)
@@ -311,6 +332,23 @@ def run() -> bool:
     report.check("состояние раньше названия",
                  waiting.index("через") < waiting.index(APP_NAME), f"-> {waiting!r}")
     report.check("с одним аккаунтом имени нет", "Алексей" not in waiting, f"-> {waiting!r}")
+
+    # Приглашение: окно свёрнуто, и заголовок — единственное, что видно.
+    one = titled(invitations_pending=1)
+    many = titled(invitations_pending=3)
+    report.check("одно приглашение видно в заголовке", "Приглашение!" in one, f"-> {one!r}")
+    report.check("несколько приглашений посчитаны", "Приглашений: 3" in many, f"-> {many!r}")
+    report.check("приглашение вытесняет обратный отсчёт", "через" not in one, f"-> {one!r}")
+    # find, а не index: на коде без правки index бросает ValueError и обрывает
+    # весь прогон, а проверка обязана честно провалиться и пустить остальные.
+    report.check("приглашение раньше названия программы",
+                 0 <= one.find("Приглашение") < one.find(APP_NAME), f"-> {one!r}")
+    # Со слетевшим входом чинить надо вход: без него о следующих приглашениях
+    # программа не узнает вовсе.
+    broken = titled(invitations_pending=1, phase=Phase.AUTH)
+    report.check("«нужен вход» старше приглашения", "нужен вход" in broken, f"-> {broken!r}")
+    report.check("без приглашений заголовок прежний",
+                 window_title(_demo_snapshot()) == waiting)
 
     named = window_title(snap, "Алексей К.")
     report.check("с несколькими аккаунтами имя впереди",
