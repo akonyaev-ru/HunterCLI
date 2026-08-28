@@ -2,8 +2,8 @@
 # Числа проставляет tools/set_version.py из тега релиза; правьте через него.
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(2026, 12, 0, 0),
-    prodvers=(2026, 12, 0, 0),
+    filevers=(2026, 13, 0, 0),
+    prodvers=(2026, 13, 0, 0),
     mask=0x3f,
     flags=0x0,
     OS=0x40004,
@@ -18,12 +18,12 @@ VSVersionInfo(
         [
           StringStruct('CompanyName', 'Алексей Коняев'),
           StringStruct('FileDescription', 'Hunter CLI — автопилот поднятия резюме'),
-          StringStruct('FileVersion', '2026.12.0'),
+          StringStruct('FileVersion', '2026.13.0'),
           StringStruct('InternalName', 'HunterCLI'),
           StringStruct('LegalCopyright', '© 2026 Алексей Коняев. GNU AGPL v3'),
           StringStruct('OriginalFilename', 'HunterCLI.exe'),
           StringStruct('ProductName', 'Hunter CLI'),
-          StringStruct('ProductVersion', '2026.12.0'),
+          StringStruct('ProductVersion', '2026.13.0'),
         ])
     ]),
     VarFileInfo([VarStruct('Translation', [0x0419, 1200])])
