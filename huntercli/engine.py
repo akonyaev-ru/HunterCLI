@@ -10,6 +10,7 @@ from datetime import datetime
 
 from . import history
 from .config import Account
+from . import salary
 from .hh import ActiveTalk, HHClient, HHError, NetworkError, Resume, TokenError
 from .logbus import LogBus, TaggedLog
 from .power import SleepDetector, WakeTimer
@@ -323,6 +324,7 @@ class BumpEngine:
         history.record_views(self.account.uid, fresh)
         self._scan_active()
         self._count_talks()
+        self._count_salary(fresh)
 
         if not fresh:
             self.log.warn("На аккаунте не найдено ни одного резюме")
@@ -416,6 +418,47 @@ class BumpEngine:
             left = len(doomed) - len(cut)
             tail = f", осталось на завтра — {left}" if left else ""
             self.log.ok(f"Активный список почищен: убрано {hidden}{tail}")
+
+    def _count_salary(self, resumes: list[Resume]) -> None:
+        """Сколько платят по вакансиям, подобранным под наши резюме. Раз в сутки.
+
+        Считаем только по резюме под автопилотом: выключенное резюме владельца
+        сейчас не интересует, а каждое лишнее стоит три запроса.
+
+        Как и прочая статистика, работа вторична: её отказ не должен ронять
+        поднятие, а экран без раздела остаётся рабочим.
+        """
+        if not self.account.settings.salary_enabled:
+            return
+        if not history.needs_salary(self.account.uid):
+            return
+        managed = [item for item in resumes if item.planned_at is not None]
+        if not managed:
+            return
+
+        try:
+            rates = self.client.currency_rates()
+            raw: list = []
+            seen = 0
+            for item in managed:
+                chunk, count = self.client.similar_vacancies(item.id)
+                raw.extend(chunk)
+                seen += count
+        except TokenError:
+            raise
+        except HHError as exc:
+            self.log.warn(f"Зарплаты по профилю посчитать не вышло: {exc}")
+            return
+
+        summary = salary.summarize(raw, rates, seen)
+        history.record_salary(self.account.uid, summary)
+        if summary.empty:
+            self.log.step(f"Зарплаты: у {seen} подобранных вакансий не указано ни одной")
+            return
+        self.log.step(
+            f"Зарплаты по профилю: середина {salary.human(summary.median)}, "
+            f"указана у {summary.share}"
+        )
 
     def _count_talks(self) -> None:
         """Пересчитать обращения к работодателям — раз в сутки, не чаще.

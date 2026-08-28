@@ -9,7 +9,7 @@ from typing import Any
 
 import requests
 
-from . import auth
+from . import auth, salary
 from .config import Account
 from .logbus import LogBus
 
@@ -67,6 +67,11 @@ def parse_hh_time(value: str | None) -> datetime | None:
 TALKS_PAGE = 100
 #: Коллекция `active` — три десятка обращений, одной страницы хватает с запасом.
 ACTIVE_PAGE = 100
+#: Подбор вакансий под резюме: страница и сколько их брать.
+#: 300 вакансий дают около сотни чисел с зарплатой — на них медиана
+#: устойчива. Одна страница дала бы три десятка, и цифра бы прыгала.
+SALARY_PAGE = 100
+SALARY_PAGES = 3
 #: Предохранитель от бесконечного цикла на неожиданном ответе: двадцать
 #: страниц — это две тысячи обращений, больше у соискателя не бывает.
 TALKS_MAX_PAGES = 20
@@ -440,6 +445,48 @@ class HHClient:
         items = data.get("items")
         return [ActiveTalk.from_api(item) for item in items
                 if isinstance(item, dict)] if isinstance(items, list) else []
+
+    def currency_rates(self) -> dict[str, float]:
+        """Курсы валют от сервиса. Один запрос, 10 валют.
+
+        Свой источник курсов заводить незачем: рядом с вакансией лежит её
+        валюта, и пересчитывать надо тем же курсом, каким считает сам сервис.
+        """
+        response = self._call("GET", "/dictionaries")
+        if response.status_code != 200:
+            raise HHError(f"на справочники пришёл код {response.status_code}")
+        return salary.rates_from_dictionary(_json_or_none(response))
+
+    def similar_vacancies(self, resume_id: str, pages: int = SALARY_PAGES
+                          ) -> tuple[list[Any], int]:
+        """Вакансии, подобранные сервисом под резюме.
+
+        Возвращает (поля `salary` всех вакансий, сколько вакансий просмотрено).
+        В списке лежат и те, где зарплаты нет: их доля — часть ответа, без неё
+        медиана вводит в заблуждение.
+
+        Своего поиска по словам тут нет намеренно: подбор делает hh, и он
+        учитывает опыт и роль лучше, чем набор ключевых слов.
+        """
+        found: list[Any] = []
+        seen = 0
+        for page in range(max(1, pages)):
+            response = self._call("GET", f"/resumes/{resume_id}/similar_vacancies",
+                                  params={"per_page": SALARY_PAGE, "page": page})
+            if response.status_code != 200:
+                detail = explain_errors(_json_or_none(response))
+                raise HHError(detail or f"на подбор вакансий пришёл код {response.status_code}")
+            data = _json_or_none(response) or {}
+            items = data.get("items")
+            if not isinstance(items, list) or not items:
+                break
+            for item in items:
+                if isinstance(item, dict):
+                    seen += 1
+                    found.append(item.get("salary"))
+            if page + 1 >= int(data.get("pages") or 1):
+                break
+        return found, seen
 
     def hide(self, talk_id: str) -> tuple[bool, str]:
         """Скрыть обращение. Возвращает (успех, пояснение).

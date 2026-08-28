@@ -157,6 +157,34 @@ def needs_talks(uid: str, *, now: str = "") -> bool:
     return now not in (entry.get("talks") or {})
 
 
+def needs_salary(uid: str, *, now: str = "") -> bool:
+    """Пора ли пересчитывать зарплаты. Раз в сутки, как и прочая статистика."""
+    now = now or today()
+    entry = load().get("accounts", {}).get(uid) or {}
+    return (entry.get("salary") or {}).get("day") != now
+
+
+def record_salary(uid: str, summary: Any, *, now: str = "") -> bool:
+    """Запомнить сегодняшнюю сводку по зарплатам.
+
+    Хранится один срез, а не ряд по дням: рынок за сутки не меняется, а
+    история зарплат — отдельная функция, которой никто не просил.
+    """
+    now = now or today()
+    with _LOCK:
+        data = load()
+        entry = data.setdefault("accounts", {}).setdefault(uid, {})
+        entry["salary"] = {
+            "day": now,
+            "median": int(summary.median),
+            "low": int(summary.low),
+            "high": int(summary.high),
+            "count": int(summary.count),
+            "total": int(summary.total),
+        }
+        return save(data)
+
+
 def needs_cleanup(uid: str, *, now: str = "") -> bool:
     """Пора ли убирать мёртвые обращения. Раз в сутки, как и пересчёт.
 
@@ -262,10 +290,21 @@ class Report:
     invitations_gained: int = 0
     since: str = ""
     resumes: list[ResumeStat] = field(default_factory=list)
+    #: Сводка по зарплатам вакансий, подобранных под резюме. Нули = не считали
+    #: или считать было нечего; раздел тогда просто не выводится.
+    salary_median: int = 0
+    salary_low: int = 0
+    salary_high: int = 0
+    salary_count: int = 0
+    salary_total: int = 0
 
     @property
     def empty(self) -> bool:
         return not self.since or not self.resumes
+
+    @property
+    def has_salary(self) -> bool:
+        return self.salary_count > 0 and self.salary_median > 0
 
     @property
     def change(self) -> int:
@@ -324,6 +363,8 @@ def report(uid: str, *, days: int = WINDOW_DAYS, now: str = "") -> Report:
 
     # По убыванию отдачи: разговор начинается с резюме, которое работает.
     stats.sort(key=lambda item: (-item.views, -item.total, item.title))
+    money = entry.get("salary")
+    money = money if isinstance(money, dict) else {}
     return Report(
         days=days,
         views=views,
@@ -338,4 +379,9 @@ def report(uid: str, *, days: int = WINDOW_DAYS, now: str = "") -> Report:
         invitations_gained=sum(v for day, v in invite_gains.items() if start <= day <= now),
         since=min(seen) if seen else "",
         resumes=stats,
+        salary_median=int(money.get("median", 0) or 0),
+        salary_low=int(money.get("low", 0) or 0),
+        salary_high=int(money.get("high", 0) or 0),
+        salary_count=int(money.get("count", 0) or 0),
+        salary_total=int(money.get("total", 0) or 0),
     )

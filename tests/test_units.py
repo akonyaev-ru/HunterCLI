@@ -285,6 +285,75 @@ def run() -> bool:
     engine._replan_locked()
     report.check("выключенное резюме не планируется", engine._resumes[0].planned_at is None)
 
+    report.section("Зарплаты: приведение к одному виду")
+    from huntercli import salary
+
+    rates = {"EUR": 0.00997, "KZT": 5.338544}
+    # Курс сервис отдаёт как «сколько валюты в рубле», поэтому пересчёт делением.
+    report.check("евро приводится к рублю",
+                 224000 < salary.to_rub({"from": 2000, "to": 2500, "currency": "EUR"}, rates) < 227000,
+                 f"-> {salary.to_rub({'from': 2000, 'to': 2500, 'currency': 'EUR'}, rates)}")
+    report.check("тенге приводится к рублю",
+                 186000 < salary.to_rub({"from": 1000000, "currency": "KZT"}, rates) < 189000)
+    report.check("вилка сводится к середине",
+                 salary.to_rub({"from": 130000, "to": 160000, "currency": "RUR"}, rates) == 145000)
+    report.check("одна граница берётся как есть",
+                 salary.to_rub({"from": 200000, "currency": "RUR"}, rates) == 200000)
+    report.check("верхняя граница тоже годится",
+                 salary.to_rub({"to": 90000, "currency": "RUR"}, rates) == 90000)
+    # «До вычета» и «на руки» несопоставимы: без пересчёта медиана завышена.
+    report.check("до вычета приводится к на руки",
+                 salary.to_rub({"from": 100000, "currency": "RUR", "gross": True}, rates) == 87000)
+    report.check("зарплаты нет — ничего не выдумываем",
+                 salary.to_rub(None, rates) is None)
+    report.check("пустая вилка отбрасывается",
+                 salary.to_rub({"currency": "RUR"}, rates) is None)
+    # Незнакомую валюту пересчитать нечем, а класть чужие деньги в рублёвый
+    # ряд — портить медиану.
+    report.check("незнакомая валюта отбрасывается",
+                 salary.to_rub({"from": 100, "currency": "XXX"}, rates) is None)
+    report.check("почасовая ставка отбрасывается",
+                 salary.to_rub({"from": 500, "to": 700, "currency": "RUR"}, rates) is None)
+    report.check("годовая сумма отбрасывается",
+                 salary.to_rub({"from": 9000000, "currency": "RUR"}, rates) is None)
+
+    report.section("Зарплаты: сводка")
+    plain = [{"from": v, "currency": "RUR"} for v in
+             (100000, 120000, 140000, 160000, 180000, 200000, 5000000)]
+    summary = salary.summarize(plain, rates, total=20)
+    # Медиана, а не среднее: одна вакансия за пять миллионов не должна тянуть.
+    report.check("медиана устойчива к выбросу", summary.median == 160000,
+                 f"-> {summary.median}")
+    report.check("среднее было бы враньём", summary.median < sum(
+        v["from"] for v in plain) / len(plain))
+    report.check("квартили посчитаны", summary.low < summary.median < summary.high,
+                 f"-> {summary.low}/{summary.median}/{summary.high}")
+    # Доля указавших — часть ответа: зарплату публикует меньшинство.
+    report.check("доля указавших сохранена", summary.share == "7 из 20",
+                 f"-> {summary.share}")
+    report.check("значения округлены до тысяч",
+                 all(v % 1000 == 0 for v in (summary.median, summary.low, summary.high)))
+
+    nothing = salary.summarize([None, None], rates, total=12)
+    report.check("без единой зарплаты сводка пустая", nothing.empty)
+    report.check("но число просмотренных сохранено", nothing.total == 12)
+    # На двух-трёх числах квартили — выдумка, показываем размах.
+    tiny = salary.summarize([{"from": 100000, "currency": "RUR"},
+                             {"from": 200000, "currency": "RUR"}], rates, total=5)
+    report.check("на крошечной выборке берётся размах",
+                 tiny.low == 100000 and tiny.high == 200000, f"-> {tiny}")
+    report.check("разряды разделены пробелом", salary.human(185000) == "185 000",
+                 f"-> {salary.human(185000)!r}")
+
+    report.section("Зарплаты: курсы из справочника")
+    rates2 = salary.rates_from_dictionary(
+        {"currency": [{"code": "RUR", "rate": 1}, {"code": "EUR", "rate": 0.00997},
+                      {"code": "BAD", "rate": 0}, {"code": None, "rate": 5}, "мусор"]})
+    report.check("годные курсы разобраны", rates2 == {"RUR": 1.0, "EUR": 0.00997},
+                 f"-> {rates2}")
+    report.check("мусор в справочнике не роняет",
+                 salary.rates_from_dictionary(None) == {})
+
     return report.summary()
 
 

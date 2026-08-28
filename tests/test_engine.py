@@ -78,6 +78,17 @@ class FakeHH:
              "updated_at": stamp(3), "vacancy": {"name": "Свежий",
                                                  "employer": {"name": "Клевер"}}},
         ]
+        # Подбор вакансий под резюме и справочник валют.
+        self.similar_calls: list[str] = []
+        self.dict_calls = 0
+        self.vacancies = [
+            {"salary": {"from": 100000, "to": 140000, "currency": "RUR", "gross": False}},
+            {"salary": {"from": 160000, "to": None, "currency": "RUR", "gross": False}},
+            {"salary": {"from": 200000, "to": 240000, "currency": "RUR", "gross": True}},
+            {"salary": {"from": 2000, "to": None, "currency": "EUR", "gross": False}},
+            {"salary": None},
+            {"salary": None},
+        ]
         self.active_calls = 0
         self.hidden: list[str] = []
         self.hide_code = 204
@@ -136,6 +147,19 @@ class Handler(BaseHTTPRequestHandler):
                 count = len(pages)
             return self._send(200, {"items": items, "found": total,
                                     "pages": count, "page": page, "per_page": 100})
+        if self.path == "/dictionaries":
+            with STATE.lock:
+                STATE.dict_calls += 1
+            return self._send(200, {"currency": [
+                {"code": "RUR", "rate": 1}, {"code": "EUR", "rate": 0.00997}]})
+        if "/similar_vacancies" in self.path:
+            from urllib.parse import urlparse
+            rid = urlparse(self.path).path.split("/")[2]
+            with STATE.lock:
+                STATE.similar_calls.append(rid)
+                items = [dict(v) for v in STATE.vacancies]
+            return self._send(200, {"items": items, "found": len(items),
+                                    "pages": 1, "page": 0, "per_page": 100})
         if self.path == "/resumes/mine":
             with STATE.lock:
                 items = [dict(item) for item in STATE.resumes.values()]
@@ -344,6 +368,35 @@ def run() -> bool:
                      len(STATE.publish_calls) > before_calls,
                      f"-> было {before_calls}, стало {len(STATE.publish_calls)}")
 
+        report.section("Зарплаты по профилю считаются раз в сутки")
+        from huntercli import history as _h
+
+        _wait_for(lambda: STATE.similar_calls != [])
+        rep = _h.report(engine.account.uid)
+        report.check("сводка по зарплатам записана", rep.has_salary,
+                     f"-> медиана {rep.salary_median}")
+        # 100–140 -> 120000; 160000; 200–240 до вычета -> 191400; 2000 EUR -> ~200600.
+        report.check("медиана посчитана", 170000 <= rep.salary_median <= 180000,
+                     f"-> {rep.salary_median}")
+        # Доля указавших — часть ответа: две вакансии из шести без зарплаты.
+        # Резюме под автопилотом два, выборка складывается по обоим: 12 и 8.
+        report.check("просмотрено больше, чем с зарплатой",
+                     rep.salary_count == 8 and rep.salary_total == 12,
+                     f"-> {rep.salary_count} из {rep.salary_total}")
+        report.check("курсы взяты у сервиса", STATE.dict_calls >= 1)
+        # Выключенное резюме владельца не интересует, а стоит три запроса.
+        report.check("считаем только по резюме под автопилотом",
+                     set(STATE.similar_calls) <= {"r1", "r2"},
+                     f"-> {STATE.similar_calls}")
+        report.check("про зарплаты сказано в журнале",
+                     any("Зарплаты по профилю" in e.text for e in engine.log.tail(200)))
+
+        before_calls = list(STATE.similar_calls)
+        engine.request_sync()
+        time.sleep(3)
+        report.check("за сутки считаем один раз", STATE.similar_calls == before_calls,
+                     f"-> {STATE.similar_calls}")
+
         report.section("Страховки уборки")
         # Выключатель: скрытие необратимо, поэтому передумать можно только
         # заранее — и способ обязан работать без пересборки.
@@ -356,6 +409,13 @@ def run() -> bool:
                      engine5.snapshot().invitations_pending == 1)
         report.check("с выключенной уборкой ничего не скрыто", STATE.hidden == [],
                      f"-> {STATE.hidden}")
+        before_similar = list(STATE.similar_calls)
+        account5.settings.salary_enabled = False
+        engine5.request_sync()
+        time.sleep(3)
+        report.check("выключенные зарплаты не запрашиваются",
+                     STATE.similar_calls == before_similar,
+                     f"-> {len(STATE.similar_calls)} против {len(before_similar)}")
         engine5.stop()
         engine5.join()
 
