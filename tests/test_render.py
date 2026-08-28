@@ -347,8 +347,12 @@ def run() -> bool:
     # программа не узнает вовсе.
     broken = titled(invitations_pending=1, phase=Phase.AUTH)
     report.check("«нужен вход» старше приглашения", "нужен вход" in broken, f"-> {broken!r}")
-    report.check("без приглашений заголовок прежний",
-                 window_title(_demo_snapshot()) == waiting)
+    # Сравнивать заголовки целиком нельзя: в них секунды обратного отсчёта, и
+    # два снимка подряд расходятся, если между ними тикнула секунда. На быстрой
+    # машине проходило, на раннере GitHub — нет.
+    plain = window_title(_demo_snapshot())
+    report.check("без приглашений о приглашении молчим",
+                 "Приглашени" not in plain and "через" in plain, f"-> {plain!r}")
 
     named = window_title(snap, "Алексей К.")
     report.check("с несколькими аккаунтами имя впереди",
