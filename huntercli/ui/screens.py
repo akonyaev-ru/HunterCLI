@@ -79,6 +79,36 @@ def welcome(console: Console) -> None:
     )
 
 
+# ------------------------------------------------------------- автозапуск
+
+
+def offer_autostart(console: Console) -> bool | None:
+    """Один раз спросить про запуск вместе с Windows. None — ввода нет."""
+    choices = Table.grid(padding=(0, 2))
+    choices.add_column(style=f"bold {ACCENT_SOFT}", justify="right", width=3)
+    choices.add_column()
+    choices.add_row("1", Text("Да, запускать вместе с Windows  ·  рекомендуется", style="white"))
+    choices.add_row("2", Text("Нет, буду запускать сам", style="white"))
+
+    body = Group(
+        Text("Запускать Hunter CLI вместе с Windows?", style="white"),
+        Text(),
+        Text("Программа сама откроется через минуту после входа в Windows. "
+             "Поднятия не пропадут, если компьютер перезагрузился или выключался.",
+             style=MUTED),
+        Text(),
+        choices,
+        Text(),
+        Text("Передумать можно в любой момент: HunterCLI.exe --autostart on или off.",
+             style=MUTED),
+    )
+    _shell(console, body, "АВТОЗАПУСК")
+    choice = _ask(console, f"[{ACCENT_SOFT}]Ваш выбор[/]", choices=["1", "2"], default="1")
+    if choice is None:
+        return None
+    return choice == "1"
+
+
 # ------------------------------------------------------------------- вход
 
 

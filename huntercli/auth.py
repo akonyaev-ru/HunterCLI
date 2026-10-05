@@ -51,8 +51,68 @@ BROWSER_UA = (
 StatusFn = Callable[[str], None]
 
 
+#: Каким бывает отказ сервиса авторизации. От вида зависит, что делать дальше:
+#: переждать, продлить позже, попросить войти заново или честно сказать, что
+#: нужна новая версия программы.
+TRANSIENT = "transient"      # сеть, 5xx, 429, страница вместо JSON — переждать
+NOT_EXPIRED = "not_expired"  # токен ещё действует — продлевать рано
+CLIENT = "client"            # сервис не принимает ключ самой программы
+REJECTED = "rejected"        # доступ отозван — нужен вход заново
+
+
 class AuthError(Exception):
     """Не удалось получить или обновить токен."""
+
+    def __init__(self, message: str, kind: str = REJECTED) -> None:
+        super().__init__(message)
+        self.kind = kind
+
+
+#: Ключ программы отвергнут. Текст на экран: войти заново не поможет.
+CLIENT_REJECTED = (
+    "сервис больше не принимает ключ программы. Повторный вход не поможет — "
+    "нужна новая версия Hunter CLI"
+)
+
+#: Тексты ошибок OAuth — дословно из спецификации api.hh.ru (схемы
+#: ErrorsCommonBadAuthorization*), снятой 2026-10-05. Справа — то же словами.
+_GRANT_HINTS = {
+    "token not expired": "токен ещё действует — продлить его можно только после истечения срока",
+    "token has already been refreshed": "ключ продления уже использован — возможно, "
+                                        "программа была запущена дважды",
+    "token was revoked": "сервис отозвал доступ (например, истёк срок действия пароля)",
+    "token deactivated": "доступ отключён после смены пароля",
+    "bad token": "сохранённый ключ продления не подошёл",
+    "force exchange limit exceeded": "исчерпан лимит продлений",
+    "code has already been used": "код входа уже использован",
+    "code expired": "код входа устарел",
+    "code was revoke": "код входа отозван",
+    "token not found": "сервис не знает сохранённый ключ продления",
+    "token is empty": "нет ключа продления",
+    "code not found": "код входа не найден",
+    "account is locked": "аккаунт заблокирован — нужна служба поддержки",
+    "password invalidated": "пароль устарел — восстановите его на сайте",
+    "login not verified": "аккаунт не подтверждён",
+}
+_CLIENT_DESCRIPTIONS = {"client_id or client_secret not found", "account not found"}
+
+
+def classify_token_reply(status: int, body: Any) -> tuple[str, str]:
+    """Как понимать ответ сервиса авторизации, кроме 200: (вид, объяснение).
+
+    Ответ не-JSON — это сбой шлюза или страница защиты от роботов, а не
+    решение сервиса о доступе: стирать доступ из-за такого нельзя.
+    """
+    if status == 429 or status >= 500 or not isinstance(body, dict):
+        return TRANSIENT, f"сервис авторизации временно не отвечает (код {status})"
+    error = str(body.get("error") or "").strip()
+    description = str(body.get("error_description") or "").strip()
+    if error == "invalid_client" or description in _CLIENT_DESCRIPTIONS:
+        return CLIENT, CLIENT_REJECTED
+    if description == "token not expired":
+        return NOT_EXPIRED, _GRANT_HINTS[description]
+    hint = _GRANT_HINTS.get(description) or description or error or f"код {status}"
+    return REJECTED, hint
 
 
 # --------------------------------------------------------------------- URL
@@ -98,21 +158,20 @@ def _post_token(payload: dict[str, str]) -> dict[str, Any]:
             timeout=25,
         )
     except requests.RequestException as exc:
-        raise AuthError(f"нет связи с сервисом: {exc}") from exc
+        raise AuthError(f"нет связи с сервисом: {exc}", TRANSIENT) from exc
 
     if response.status_code != 200:
-        detail = response.text.strip()
         try:
             body = response.json()
-            detail = body.get("error_description") or body.get("error") or detail
         except ValueError:
-            pass
-        raise AuthError(f"сервис отклонил запрос ({response.status_code}): {detail[:200]}")
+            body = None
+        kind, hint = classify_token_reply(response.status_code, body)
+        raise AuthError(hint[:200], kind)
 
     try:
         data = response.json()
     except ValueError as exc:
-        raise AuthError("в ответ на запрос токена пришёл не-JSON") from exc
+        raise AuthError("в ответ на запрос токена пришёл не-JSON", TRANSIENT) from exc
 
     if not data.get("access_token"):
         raise AuthError("в ответе сервиса нет access_token")
@@ -136,10 +195,16 @@ def refresh_token(token: str) -> dict[str, Any]:
 
     hh.ru ждёт запрос вообще без client_id/secret, но на некоторых аккаунтах
     принимает и с ними — пробуем оба варианта, прежде чем сдаться.
+
+    Второй вариант пробуем только при отказе по существу. «Токен ещё действует»
+    и временный сбой однозначны: второй запрос дал бы тот же ответ — и лишнее
+    обращение к сервису с ключом программы.
     """
     try:
         return _post_token({"grant_type": "refresh_token", "refresh_token": token})
-    except AuthError:
+    except AuthError as exc:
+        if exc.kind in (NOT_EXPIRED, TRANSIENT):
+            raise
         return _post_token(
             {
                 "grant_type": "refresh_token",

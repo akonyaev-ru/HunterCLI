@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import threading
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -19,6 +20,24 @@ BASE = f"http://127.0.0.1:{PORT}"
 #: Каким сценарием отвечает поддельный hh.ru прямо сейчас.
 MODE = {"name": "anonymous"}
 SEEN_COOKIES: list[str | None] = []
+
+#: Ответы сервиса авторизации. Тексты ошибок — дословно из спецификации
+#: api.hh.ru (схемы ErrorsCommonBadAuthorization*), снятой 2026-10-05.
+TOKEN_MODE = {"name": "ok"}
+TOKEN_BODIES: list[str] = []
+TOKEN_REPLIES = {
+    "ok": (200, {"access_token": "AT", "refresh_token": "RT2", "expires_in": 1209599}),
+    "not_expired": (400, {"error": "invalid_grant", "error_description": "token not expired"}),
+    "revoked": (400, {"error": "invalid_grant", "error_description": "token was revoked"}),
+    "deactivated": (400, {"error": "invalid_grant", "error_description": "token deactivated"}),
+    "client": (400, {"error": "invalid_client",
+                     "error_description": "client_id or client_secret not found"}),
+    "account": (400, {"error": "invalid_request", "error_description": "account not found"}),
+    "locked": (400, {"error": "invalid_request", "error_description": "account is locked"}),
+    "busy": (429, {"error": "too_many_requests"}),
+    "down": (502, None),
+    "robot": (403, None),
+}
 
 APPROVE_PAGE = """<!doctype html><html><body>
 <div class="oauth-app"><h1>Доступ к аккаунту</h1>
@@ -67,6 +86,18 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         SEEN_COOKIES.append(self.headers.get("Cookie"))
         body = self.rfile.read(int(self.headers.get("Content-Length") or 0)).decode("utf-8")
+        if self.path.startswith("/oauth/token"):
+            TOKEN_BODIES.append(body)
+            code, payload = TOKEN_REPLIES[TOKEN_MODE["name"]]
+            if payload is None:
+                # Сбой шлюза и страница защиты от роботов — HTML, а не JSON.
+                return self._reply(code, b"<html><body>Bad Gateway / are you a robot?</body></html>")
+            raw = json.dumps(payload).encode("utf-8")
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            return self.wfile.write(raw)
         if not self.path.startswith("/oauth/approve"):
             return self._reply(404)
         if "_xsrf=XSRF-FROM-PAGE" in body and "approve=" in body:
@@ -156,6 +187,65 @@ def run() -> bool:
         report.raises("ответ не 200 -> AuthError", auth.AuthError, auth.exchange_code, "X")
         auth.TOKEN_URL = "http://127.0.0.1:9/token"
         report.raises("сеть недоступна -> AuthError", auth.AuthError, auth.exchange_code, "X")
+
+        report.section("Ответы сервиса авторизации разбираются по смыслу")
+        # От вида отказа зависит, стирать ли доступ: сбой связи — переждать,
+        # отозванный токен — войти заново, отвергнутый ключ программы — новая версия.
+        not_expired = getattr(auth, "NOT_EXPIRED", "not_expired")
+        rejected = getattr(auth, "REJECTED", "rejected")
+        client = getattr(auth, "CLIENT", "client")
+        transient = getattr(auth, "TRANSIENT", "transient")
+
+        def kind(exc):
+            return getattr(exc, "kind", None)
+
+        def attempt(mode, func=auth.refresh_token, argument="RT"):
+            TOKEN_MODE["name"] = mode
+            TOKEN_BODIES.clear()
+            try:
+                func(argument)
+            except auth.AuthError as exc:
+                return exc
+            return None
+
+        auth.TOKEN_URL = f"{BASE}/oauth/token"
+        exc = attempt("not_expired")
+        report.check("«token not expired» понят как «токен ещё действует»",
+                     kind(exc) == not_expired, f"-> {kind(exc)!r}")
+        report.check("при таком ответе второй запрос не делается",
+                     len(TOKEN_BODIES) == 1, f"-> запросов {len(TOKEN_BODIES)}")
+        report.check("сообщение — словами, без кода ответа",
+                     exc is not None and "(400)" not in str(exc) and "истеч" in str(exc),
+                     f"-> {exc}")
+
+        for mode in ("revoked", "deactivated", "locked"):
+            exc = attempt(mode)
+            report.check(f"окончательный отказ ({mode}) — нужен вход заново",
+                         kind(exc) == rejected, f"-> {kind(exc)!r}: {exc}")
+
+        for mode in ("client", "account"):
+            exc = attempt(mode)
+            report.check(f"отказ по ключу программы ({mode}) распознан",
+                         kind(exc) == client, f"-> {kind(exc)!r}")
+            report.check(f"и объяснён: нужна новая версия ({mode})",
+                         exc is not None and "новая версия" in str(exc), f"-> {exc}")
+
+        exc = attempt("client", auth.exchange_code, "CODE")
+        report.check("при входе отказ по ключу программы объяснён так же",
+                     kind(exc) == client and "новая версия" in str(exc), f"-> {exc}")
+
+        for mode in ("down", "busy", "robot"):
+            exc = attempt(mode)
+            report.check(f"временный сбой ({mode}) не считается отказом",
+                         kind(exc) == transient, f"-> {kind(exc)!r}: {exc}")
+
+        auth.TOKEN_URL = "http://127.0.0.1:9/token"
+        exc = attempt("ok")
+        report.check("нет связи — тоже временный сбой", kind(exc) == transient, f"-> {kind(exc)!r}")
+
+        auth.TOKEN_URL = f"{BASE}/oauth/token"
+        exc = attempt("ok")
+        report.check("успешное продление по-прежнему проходит", exc is None, f"-> {exc}")
     finally:
         auth.AUTHORIZE_URL, auth.APPROVE_URL, auth.TOKEN_URL = saved
         server.shutdown()

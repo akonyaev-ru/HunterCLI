@@ -83,8 +83,13 @@ def run() -> bool:
     report.check("настоящий отказ hh.ru опознан как проблема с токеном",
                  bool(error_kinds(real_403) & AUTH_ERROR_MARKERS),
                  f"-> {error_kinds(real_403)}")
-    report.check("запрос без заголовка тоже опознан",
-                 bool(error_kinds({"errors": [{"type": "forbidden"}]}) & AUTH_ERROR_MARKERS))
+    # С 2026.16 (AC-36): «forbidden» без признаков токена — запрет на сам запрос
+    # (скрытое резюме, чужое обращение), а не потеря доступа. Раньше такой ответ
+    # во второстепенном запросе выбивал из аккаунта целиком.
+    report.check("403 forbidden без признаков токена — не проблема с токеном",
+                 not (error_kinds({"errors": [{"type": "forbidden"}]}) & AUTH_ERROR_MARKERS))
+    expired = {"errors": [{"type": "oauth", "value": "token_expired"}]}
+    report.check("истёкший токен опознан", bool(error_kinds(expired) & AUTH_ERROR_MARKERS))
     quota = {"errors": [{"type": "bad_argument", "value": "quota_exceeded"}]}
     report.check("исчерпанный лимит НЕ путаем с проблемой токена",
                  not (error_kinds(quota) & AUTH_ERROR_MARKERS), f"-> {error_kinds(quota)}")
@@ -145,8 +150,32 @@ def run() -> bool:
     report.check("на диске нет открытого токена",
                  "AT-1" not in open(config_path(), encoding="utf-8").read())
 
-    account.expires_at = time.time() + 3600
-    report.check("токен на исходе просит обновления", account.needs_refresh)
+    # С 2026.16 (AC-29): сервис продлевает только истёкший токен — «token not
+    # expired» в ответ на всё, что раньше. Досрочная попытка давала лишь ошибку.
+    account.expires_at = time.time() + 86400
+    report.check("за сутки до конца продления не просит", not account.needs_refresh)
+    account.expires_at = time.time() + 60
+    report.check("и за минуту до конца — тоже", not account.needs_refresh)
+    account.expires_at = time.time() - 1
+    report.check("истёкший просит продления", account.needs_refresh)
+    saved_refresh, account.refresh_token = account.refresh_token, ""
+    report.check("без ключа продления — не просит", not account.needs_refresh)
+    account.refresh_token = saved_refresh
+
+    report.section("Конфиг: вопрос об автозапуске")
+    report.check("в новом конфиге вопрос ещё не задан",
+                 getattr(Settings(), "autostart_asked", None) is False)
+    cfg.settings.autostart_asked = True
+    cfg.save()
+    report.check("ответ на вопрос переживает сохранение",
+                 getattr(config_mod.load().settings, "autostart_asked", None) is True)
+    with open(config_path(), encoding="utf-8") as fh:
+        raw = json.load(fh)
+    raw["settings"].pop("autostart_asked", None)
+    with open(config_path(), "w", encoding="utf-8") as fh:
+        json.dump(raw, fh)
+    report.check("в конфиге прежних версий поля нет — спросим один раз",
+                 getattr(config_mod.load().settings, "autostart_asked", None) is False)
 
     report.section("Конфиг: миграция с версии 1")
     with open(config_path(), "w", encoding="utf-8") as fh:

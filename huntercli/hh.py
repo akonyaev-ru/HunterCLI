@@ -207,13 +207,19 @@ class Resume:
 #: Важно: api.hh.ru на плохой токен отвечает 403 (не 401) с телом вида
 #: {"errors": [{"value": "bad_authorization", "type": "oauth"}]} — без учёта
 #: этого автоматическое продление токена не срабатывало бы никогда.
+#: «forbidden» здесь нет намеренно (с 2026.16): это запрет на сам запрос —
+#: скрытое резюме, чужое обращение, — а не потеря доступа. Раньше такой ответ
+#: во второстепенном запросе выбивал из аккаунта целиком.
 AUTH_ERROR_MARKERS = {
     "oauth",
     "bad_authorization",
     "token_expired",
     "token_revoked",
-    "forbidden",
 }
+
+#: Сервис ответил «токен ещё действует», хотя по нашим часам он истёк: часы
+#: компьютера спешат. Спросить снова можно не раньше, чем через столько.
+REFRESH_RETRY_SEC = 10 * 60
 
 
 def error_kinds(payload: dict[str, Any] | None) -> set[str]:
@@ -257,6 +263,8 @@ class HHClient:
     def __init__(self, account: Account, log: LogBus) -> None:
         self.account = account
         self.log = log
+        #: Раньше этого момента продлевать не пробуем (см. REFRESH_RETRY_SEC).
+        self._refresh_not_before = 0.0
         self.session = requests.Session()
         self.session.headers.update(
             {
@@ -331,17 +339,33 @@ class HHClient:
     # -------------------------------------------------------------- токен
 
     def ensure_fresh_token(self) -> None:
-        if self.account.needs_refresh:
+        """Продлить истёкший токен до запроса, а не после отказа сервиса."""
+        if self.account.needs_refresh and time.time() >= self._refresh_not_before:
             self.try_refresh()
 
     def try_refresh(self) -> bool:
+        """Продлить доступ. False — продлевать нечего или ещё рано.
+
+        Окончательный отказ и отвергнутый ключ программы — TokenError с причиной:
+        дальше нужен человек. Сбой связи — NetworkError: доступ не стираем, а
+        пробуем позже, как с любой другой пропажей сети.
+        """
         if not self.account.refresh_token:
             return False
         try:
             payload = auth.refresh_token(self.account.refresh_token)
         except auth.AuthError as exc:
+            if exc.kind == auth.NOT_EXPIRED:
+                # Наши часы спешат. Ошибки тут нет: токен рабочий, спросим позже.
+                self._refresh_not_before = time.time() + REFRESH_RETRY_SEC
+                self.log.info(f"Продлевать доступ рано: {exc}")
+                return False
+            if exc.kind == auth.TRANSIENT:
+                self.log.warn(f"Продлить доступ не вышло, попробуем позже: {exc}")
+                raise NetworkError(str(exc)) from exc
             self.log.error(f"Не удалось обновить токен: {exc}")
-            return False
+            raise TokenError(str(exc)) from exc
+        self._refresh_not_before = 0.0
         self.account.apply_token(payload)
         self.account.save()
         self.log.ok("Токен доступа обновлён автоматически")

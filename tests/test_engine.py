@@ -13,6 +13,7 @@ from harness import Report, quiet_server, sandbox
 
 sandbox()
 
+import huntercli.engine as engine_mod
 import huntercli.hh as hh
 from huntercli import auth
 from huntercli.config import Config
@@ -92,6 +93,14 @@ class FakeHH:
         self.active_calls = 0
         self.hidden: list[str] = []
         self.hide_code = 204
+        # Сервис авторизации: как ответить на продление и сколько раз спросили.
+        # Ответы — дословно из спецификации api.hh.ru (ErrorsCommonBadAuthorization*).
+        self.token_mode = "ok"
+        self.token_calls = 0
+        # Сколько раз перечитали список резюме — по нему видна частота синхронизаций.
+        self.mine_calls = 0
+        # Подбор вакансий отвечает 403 не по токену: резюме скрыто и т. п.
+        self.similar_forbidden = False
 
 
 STATE = FakeHH()
@@ -157,16 +166,22 @@ class Handler(BaseHTTPRequestHandler):
             rid = urlparse(self.path).path.split("/")[2]
             with STATE.lock:
                 STATE.similar_calls.append(rid)
+                if STATE.similar_forbidden:
+                    return self._send(403, {"errors": [{"type": "forbidden",
+                                                        "value": "resume_not_available"}]})
                 items = [dict(v) for v in STATE.vacancies]
             return self._send(200, {"items": items, "found": len(items),
                                     "pages": 1, "page": 0, "per_page": 100})
         if self.path == "/resumes/mine":
             with STATE.lock:
+                STATE.mine_calls += 1
                 items = [dict(item) for item in STATE.resumes.values()]
             return self._send(200, {"items": items, "found": len(items)})
         return self._send(404)
 
     def do_POST(self):
+        if self.path.startswith("/oauth/token"):
+            return self._token()
         if not self._authorized():
             # Ровно так отвечает настоящий api.hh.ru: 403, а не 401.
             return self._send(403, {"description": "Forbidden",
@@ -185,6 +200,26 @@ class Handler(BaseHTTPRequestHandler):
                 item["can_publish_or_update"] = False
                 item["next_publish_at"] = _iso(4 * 3600)
         return self._send(204)
+
+    def _token(self):
+        """Поддельный сервис авторизации — продление токена."""
+        self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        with STATE.lock:
+            STATE.token_calls += 1
+            mode = STATE.token_mode
+            fresh = STATE.valid_token
+        if mode == "ok":
+            return self._send(200, {"access_token": fresh, "refresh_token": "RT-NEXT",
+                                    "expires_in": 1209599})
+        if mode == "down":
+            return self._send(502, None)
+        replies = {
+            "not_expired": ("invalid_grant", "token not expired"),
+            "revoked": ("invalid_grant", "token was revoked"),
+            "client": ("invalid_client", "client_id or client_secret not found"),
+        }
+        error, description = replies[mode]
+        return self._send(400, {"error": error, "error_description": description})
 
     def do_DELETE(self):
         if not self._authorized():
@@ -214,12 +249,24 @@ def _wait_for(predicate, seconds: float = 25.0) -> bool:
     return False
 
 
-def _make_engine(token: str, refresh: str = "RT"):
+def _make_engine(token: str, refresh: str = "RT", expires_in: int = 1209599):
     """Движок с собственным аккаунтом: конфиг держит его, движок им живёт."""
     log = LogBus(to_file=False)
     account = Config().account
-    account.apply_token({"access_token": token, "refresh_token": refresh, "expires_in": 1209599})
+    account.apply_token({"access_token": token, "refresh_token": refresh, "expires_in": expires_in})
     return BumpEngine(account, hh.HHClient(account, log), log), account, log
+
+
+def _token_errors(log: LogBus) -> list[str]:
+    """Строки уровня ERROR про продление доступа."""
+    return [e.text for e in log.tail(300) if e.level == "error" and "токен" in e.text.lower()]
+
+
+def _syncs(engine: BumpEngine, times: int) -> None:
+    """Несколько синхронизаций подряд — каждая ходит к сервису по нескольку раз."""
+    for _ in range(times):
+        engine.request_sync()
+        time.sleep(1.2)
 
 
 def run() -> bool:
@@ -230,6 +277,7 @@ def run() -> bool:
     # Глобальные настройки модулей обязательно вернуть: иначе следующий тест
     # пойдёт стучаться в наш поддельный (и уже мёртвый) сервер.
     real_api_root, real_refresh = hh.API_ROOT, auth.refresh_token
+    real_token_url, real_gap = auth.TOKEN_URL, engine_mod.MIN_SYNC_GAP_SEC
     hh.API_ROOT = f"http://127.0.0.1:{PORT}"
 
     try:
@@ -490,6 +538,147 @@ def run() -> bool:
         engine3.stop()
         engine3.join()
 
+        # Дальше — настоящий auth.refresh_token против поддельного сервиса
+        # авторизации: проверяется вся цепочка, включая разбор ответа.
+        auth.refresh_token = real_refresh
+        auth.TOKEN_URL = f"http://127.0.0.1:{PORT}/oauth/token"
+        with STATE.lock:
+            # Поднимать нечего: иначе поднятие и контрольная синхронизация
+            # после него вмешались бы в счёт запросов.
+            for item in STATE.resumes.values():
+                item["can_publish_or_update"] = False
+                item["next_publish_at"] = _iso(3 * 3600)
+
+        report.section("Действующий токен раньше срока не продлевается")
+        with STATE.lock:
+            STATE.valid_token = "GOOD-TOKEN"
+            STATE.token_mode = "not_expired"
+            STATE.token_calls = 0
+        engine5, _, log5 = _make_engine("GOOD-TOKEN", expires_in=86400)  # сутки до конца
+        engine5.start()
+        _wait_for(lambda: engine5.snapshot().last_sync_at is not None, 20)
+        _syncs(engine5, 3)
+        report.check("за сутки до конца срока продлить не пытаемся",
+                     STATE.token_calls == 0, f"-> запросов на продление {STATE.token_calls}")
+        report.check("в журнале нет ошибок продления", not _token_errors(log5),
+                     f"-> {_token_errors(log5)[:2]}")
+        engine5.stop()
+        engine5.join()
+
+        report.section("Часы спешат: «ещё не истёк» не превращается в поток ошибок")
+        with STATE.lock:
+            STATE.token_calls = 0
+        engine6, account6, log6 = _make_engine("GOOD-TOKEN")
+        account6.expires_at = time.time() - 60  # по нашим часам истёк, у сервиса — нет
+        engine6.start()
+        _wait_for(lambda: engine6.snapshot().last_sync_at is not None, 20)
+        _syncs(engine6, 3)
+        report.check("одна попытка продления, дальше — пауза",
+                     STATE.token_calls == 1, f"-> запросов на продление {STATE.token_calls}")
+        report.check("ни одной ошибки продления в журнале", not _token_errors(log6),
+                     f"-> {_token_errors(log6)[:2]}")
+        report.check("работа идёт, доступ на месте",
+                     not engine6.auth_needed and account6.access_token == "GOOD-TOKEN")
+        engine6.stop()
+        engine6.join()
+
+        report.section("Сбой связи при продлении не стирает доступ")
+        with STATE.lock:
+            STATE.valid_token = "NEW-TOKEN"
+            STATE.token_mode = "down"
+            STATE.token_calls = 0
+        engine7, account7, _ = _make_engine("STALE", refresh="RT-KEEP")
+        engine7.start()
+        _wait_for(lambda: engine7.snapshot().offline_since is not None or engine7.auth_needed, 25)
+        report.check("повторный вход не потребовался", not engine7.auth_needed)
+        report.check("сохранённый доступ не стёрт",
+                     account7.access_token == "STALE" and account7.refresh_token == "RT-KEEP",
+                     f"-> {account7.access_token!r} / {account7.refresh_token!r}")
+        report.check("состояние — «нет связи»", engine7.snapshot().offline_since is not None)
+        with STATE.lock:
+            STATE.token_mode = "ok"
+        engine7.request_sync()
+        _wait_for(lambda: account7.access_token == "NEW-TOKEN", 15)
+        report.check("связь вернулась — доступ продлён сам", account7.access_token == "NEW-TOKEN",
+                     f"-> {account7.access_token!r}")
+        engine7.stop()
+        engine7.join()
+
+        report.section("Доступ отозван сервисом — вход заново, с причиной")
+        with STATE.lock:
+            STATE.token_mode = "revoked"
+        engine8, account8, _ = _make_engine("STALE")
+        engine8.start()
+        _wait_for(lambda: engine8.auth_needed, 20)
+        report.check("движок попросил повторный вход", engine8.auth_needed)
+        report.check("отозванный доступ стёрт", not account8.access_token and not account8.refresh_token)
+        reason = getattr(engine8, "auth_reason", "")
+        report.check("причина названа", "отозвал" in reason, f"-> {reason!r}")
+        engine8.stop()
+        engine8.join()
+
+        report.section("Ключ программы отвергнут — сказано прямо")
+        with STATE.lock:
+            STATE.token_mode = "client"
+        engine9, _, log9 = _make_engine("STALE")
+        engine9.start()
+        _wait_for(lambda: engine9.auth_needed, 20)
+        reason = getattr(engine9, "auth_reason", "")
+        report.check("причина: нужна новая версия программы", "новая версия" in reason,
+                     f"-> {reason!r}")
+        report.check("она же в журнале", any("новая версия" in e.text for e in log9.tail(50)))
+        engine9.stop()
+        engine9.join()
+
+        report.section("403 не по токену не выбивает из аккаунта")
+        with STATE.lock:
+            STATE.valid_token = "GOOD-TOKEN"
+            STATE.token_mode = "ok"
+            STATE.token_calls = 0
+            STATE.similar_forbidden = True
+            STATE.similar_calls.clear()
+        engine10, _, log10 = _make_engine("GOOD-TOKEN")
+        engine10.start()
+        _wait_for(lambda: bool(STATE.similar_calls) and engine10.snapshot().last_sync_at is not None, 20)
+        time.sleep(2)
+        report.check("подбор вакансий спрошен", bool(STATE.similar_calls))
+        report.check("повторный вход не потребовался", not engine10.auth_needed)
+        report.check("продлевать токен не пытались", STATE.token_calls == 0,
+                     f"-> запросов на продление {STATE.token_calls}")
+        report.check("отказ записан предупреждением",
+                     any("Зарплаты" in e.text for e in log10.tail(80) if e.level == "warn"))
+        engine10.stop()
+        engine10.join()
+        with STATE.lock:
+            STATE.similar_forbidden = False
+
+        report.section("На паузе сервис не дёргаем чаще обычного")
+        # Ужимаем «не чаще раза в 45 с» до секунды: прежде пауза перечитывала
+        # список на каждом таком промежутке — так это видно за секунды, а не минуты.
+        engine_mod.MIN_SYNC_GAP_SEC = 1
+        engine11, _, _ = _make_engine("GOOD-TOKEN")
+        engine11.start()
+        _wait_for(lambda: engine11.snapshot().last_sync_at is not None, 20)
+        engine11.toggle_pause()
+        time.sleep(2.5)
+        before = STATE.mine_calls
+        time.sleep(6)
+        during = STATE.mine_calls - before
+        report.check("на паузе список резюме не перечитывается без нужды", during == 0,
+                     f"-> перечитан {during} раз за 6 с")
+        engine11.request_sync()
+        time.sleep(2)
+        report.check("ручная синхронизация на паузе срабатывает сразу",
+                     STATE.mine_calls > before + during)
+        engine11.toggle_pause()
+        _wait_for(lambda: engine11.snapshot().phase != Phase.PAUSED, 5)
+        report.check("пауза снимается сразу",
+                     not engine11.snapshot().paused and engine11.snapshot().phase != Phase.PAUSED,
+                     f"-> {engine11.snapshot().phase}")
+        engine11.stop()
+        engine11.join()
+        engine_mod.MIN_SYNC_GAP_SEC = real_gap
+
 
         report.section("Сеть пропала")
         server.shutdown()
@@ -507,6 +696,7 @@ def run() -> bool:
 
     finally:
         hh.API_ROOT, auth.refresh_token = real_api_root, real_refresh
+        auth.TOKEN_URL, engine_mod.MIN_SYNC_GAP_SEC = real_token_url, real_gap
         try:
             server.server_close()
         except Exception:

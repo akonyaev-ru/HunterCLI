@@ -19,8 +19,10 @@ from . import paths, secrets
 
 SCHEMA_VERSION = 3
 
-#: Токен hh.ru живёт 14 суток. Обновляем заранее, чтобы не ловить 401.
-REFRESH_MARGIN_SEC = 2 * 24 * 3600
+#: Токен hh.ru живёт 14 суток и продлевается только ПОСЛЕ истечения: на попытку
+#: раньше сервис отвечает `invalid_grant: token not expired` (спецификация
+#: api.hh.ru). До 2026.16 программа пробовала за двое суток до срока — перед
+#: каждым запросом, — и за полтора месяца это дало 2 079 строк ошибок в журнале.
 
 #: Больше и не нужно: у каждого аккаунта свой поток и свои обращения к сервису,
 #: а полоса вкладок в узком окне перестаёт читаться.
@@ -59,6 +61,9 @@ class Settings:
     #: Потолок на один проход. Страховка от ошибки в критерии: за раз уйдёт
     #: не больше этого, остальное — на следующие сутки, и будет время заметить.
     cleanup_max_per_run: int = 25
+    #: Спрашивали ли про автозапуск вместе с Windows. Спрашиваем один раз; сам
+    #: автозапуск здесь не хранится — правда о нём в планировщике Windows.
+    autostart_asked: bool = False
 
     def quiet_now(self, hour: int) -> bool:
         if not self.quiet_hours or len(self.quiet_hours) != 2:
@@ -143,7 +148,7 @@ class Account:
             return False
         if not self.expires_at:
             return False
-        return self.seconds_left < REFRESH_MARGIN_SEC
+        return self.seconds_left <= 0
 
     def apply_token(self, payload: dict[str, Any]) -> None:
         """Записать ответ /oauth/token."""

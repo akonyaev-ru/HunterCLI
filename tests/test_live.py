@@ -68,6 +68,18 @@ def run() -> bool:
     report.raises("неверный код -> AuthError", auth.AuthError,
                   auth.exchange_code, "DEFINITELY-NOT-A-VALID-CODE")
 
+    report.section("Продление выдуманным ключом")
+    # Отказ должен читаться как окончательный, а не как сбой связи: иначе
+    # отозванный доступ программа пережидала бы вечно, не прося войти заново.
+    try:
+        auth.refresh_token("DEFINITELY-NOT-A-VALID-REFRESH-TOKEN")
+        refused = None
+    except auth.AuthError as exc:
+        refused = exc
+    report.check("выдуманный ключ продления — окончательный отказ",
+                 refused is not None and refused.kind == auth.REJECTED,
+                 f"-> {getattr(refused, 'kind', None)!r}: {refused}")
+
     return report.summary()
 
 

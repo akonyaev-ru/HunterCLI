@@ -13,7 +13,7 @@ import time
 from rich.console import Console
 from rich.live import Live
 
-from . import __version__, APP_NAME, auth, config, history, paths, power, winconsole
+from . import __version__, APP_NAME, auth, autostart, config, history, paths, power, winconsole
 from .config import MAX_ACCOUNTS, Account
 from .engine import BumpEngine, Phase, Snapshot
 from .hh import HHClient, HHError
@@ -63,6 +63,7 @@ class HunterApp:
         self._awake_held = False
         self._drop_asked_until = 0.0
         self._title = ""
+        self._autostart_seen = False
 
     # ---------------------------------------------------------- аккаунты
 
@@ -135,6 +136,9 @@ class HunterApp:
                     first_run = False
                     continue
 
+                if not self._autostart_seen:
+                    self._autostart_seen = True
+                    self._offer_autostart()
                 outcome = self._session()
                 self._show_title(IDLE_TITLE)
                 if outcome == "quit":
@@ -202,6 +206,44 @@ class HunterApp:
             power.keep_awake(False)
             self._awake_held = False
 
+    # -------------------------------------------------------- автозапуск
+
+    def _offer_autostart(self) -> None:
+        """Один раз спросить про автозапуск и держать задание при этом файле.
+
+        Задание уже есть — не спрашиваем, только следим, чтобы оно запускало
+        именно этот файл. Задания нет, а ответ уже был — значит, его убрали
+        руками, и восстанавливать его мы не вправе. Отказ планировщика — строка
+        в журнале, но не повод не работать.
+        """
+        if not autostart.supported():
+            return
+        try:
+            if autostart.registered() is not None:
+                verdict = autostart.sync()
+                if verdict == "moved":
+                    self.log.info(f"Автозапуск перенаправлен на этот файл: {autostart.target()}")
+                elif verdict == "failed":
+                    self.log.warn("Автозапуск запускает другой файл, перенаправить не вышло")
+                return
+            if self.cfg.settings.autostart_asked or not self.console.is_terminal:
+                return
+            answer = screens.offer_autostart(self.console)
+            if answer is None:
+                return  # ввод недоступен — спросим в другой раз
+            self.cfg.settings.autostart_asked = True
+            self.cfg.save()
+            if not answer:
+                self.log.info("Автозапуск не включён. Включить позже: HunterCLI.exe --autostart on")
+                return
+            ok, error = autostart.enable()
+        except Exception as exc:  # noqa: BLE001 - автозапуск не стоит работы автопилота
+            ok, error = False, str(exc)
+        if ok:
+            self.log.ok("Автозапуск включён: программа откроется через минуту после входа в Windows")
+        else:
+            self.log.warn(f"Автозапуск включить не вышло: {error}")
+
     # -------------------------------------------------------------- вход
 
     def _authorize_active(self, first_run: bool, *, manual: bool = False) -> bool:
@@ -210,6 +252,10 @@ class HunterApp:
             reason = "Повторный вход по вашей команде."
         elif first_run:
             reason = ""
+        elif self.engine.auth_reason:
+            # Причина важнее общей фразы: «сменили пароль» лечится входом, а
+            # «ключ программы не принимается» — только новой версией.
+            reason = f"Доступ потерян: {self.engine.auth_reason}."
         else:
             reason = "Доступ потерян — нужно войти заново."
         if self.cfg.corrupted and first_run:

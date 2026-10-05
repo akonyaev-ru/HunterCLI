@@ -5,11 +5,52 @@
   HunterCLI.exe --check                             — проверка окружения
   HunterCLI.exe --version                           — версия
   HunterCLI.exe --license                           — лицензия и гарантии
+  HunterCLI.exe --autostart on | off | status       — запуск вместе с Windows
 """
 
 from __future__ import annotations
 
 import sys
+import time
+
+#: Сколько держать на экране сообщение второго экземпляра. Его могли открыть
+#: двойным щелчком — окно не должно исчезнуть раньше, чем его прочтут.
+ALREADY_RUNNING_PAUSE_SEC = 6
+
+_AUTOSTART_USAGE = "Использование: HunterCLI.exe --autostart on | off | status"
+
+
+def _handle_autostart(mode: str) -> int:
+    """Включить, выключить или показать автозапуск — без запуска автопилота."""
+    from huntercli import autostart
+
+    if not autostart.supported():
+        print("Автозапуск есть только у собранной программы (HunterCLI.exe).")
+        return 1
+    if mode == "on":
+        ok, error = autostart.enable()
+        if not ok:
+            print(f"Включить автозапуск не вышло: {error}")
+            return 1
+        print("Автозапуск включён: Hunter CLI откроется через минуту после входа в Windows.")
+        print(f"Файл: {autostart.target()}")
+        return 0
+    if mode == "off":
+        ok, error = autostart.disable()
+        if not ok:
+            print(f"Выключить автозапуск не вышло: {error}")
+            return 1
+        print("Автозапуск выключен.")
+        return 0
+    if mode == "status":
+        current = autostart.registered()
+        if current is None:
+            print("Автозапуск выключен.")
+        else:
+            print(f"Автозапуск включён: {current}")
+        return 0
+    print(_AUTOSTART_USAGE)
+    return 2
 
 
 def _handle_protocol(url: str) -> int:
@@ -59,6 +100,19 @@ def main() -> int:
 
     if argument in ("--help", "-h", "/?"):
         print(__doc__)
+        return 0
+
+    if argument == "--autostart":
+        return _handle_autostart(sys.argv[2] if len(sys.argv) > 2 else "status")
+
+    # Служебные режимы выше работают и при запущенной программе. Второй
+    # автопилот — нет: два движка на одних аккаунтах только мешают друг другу.
+    from huntercli import instance
+
+    if not instance.acquire():
+        print("Hunter CLI уже запущен — его окно открыто, возможно, свёрнуто.")
+        print("Второй экземпляр не нужен: два автопилота мешали бы друг другу.")
+        time.sleep(ALREADY_RUNNING_PAUSE_SEC)
         return 0
 
     from huntercli.app import run

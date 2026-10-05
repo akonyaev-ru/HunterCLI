@@ -24,6 +24,7 @@ MODULES = [
     "test_history",
     "test_engine",
     "test_accounts",
+    "test_system",
 ]
 
 

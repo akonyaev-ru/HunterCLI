@@ -125,6 +125,9 @@ class BumpEngine:
         self._force_sync = True
         self._force_bump = False
         self._auth_needed = False
+        #: Почему понадобился вход: показывается на экране входа. Без причины
+        #: человек не отличит «сменил пароль» от «нужна новая версия программы».
+        self._auth_reason = ""
         self._backoff = 30.0
         #: Сколько непрочитанных приглашений ждёт ответа. Отсюда берётся
         #: заголовок окна: окно свёрнуто, и это единственное, что видно.
@@ -228,9 +231,15 @@ class BumpEngine:
         with self._lock:
             return self._auth_needed
 
+    @property
+    def auth_reason(self) -> str:
+        with self._lock:
+            return self._auth_reason
+
     def clear_auth_flag(self) -> None:
         with self._lock:
             self._auth_needed = False
+            self._auth_reason = ""
             self._force_sync = True
             self._phase = Phase.SYNCING
             # Вход мог быть и в другой аккаунт — владельца выясним заново.
@@ -555,6 +564,12 @@ class BumpEngine:
             self._wait_span = max(1.0, target - now)
         return target - now
 
+    def _pause_wait(self) -> float:
+        """На паузе: сколько спать до следующей обычной синхронизации."""
+        with self._lock:
+            due = (self._last_sync_at or 0) + self.account.settings.sync_interval_sec
+        return max(1.0, due - time.time())
+
     def _sleep(self, seconds: float) -> None:
         """Спать, просыпаясь на команды пользователя.
 
@@ -621,8 +636,12 @@ class BumpEngine:
             self._backoff = 30.0
 
         if paused:
+            # Спим до обычной синхронизации, а не по две секунды: иначе правило
+            # «не чаще раза в MIN_SYNC_GAP_SEC» само становилось расписанием, и
+            # пауза ходила к сервису вчетверо чаще работы. Снятие паузы и ручная
+            # синхронизация будят цикл сразу — через _wake.
             self._set_phase(Phase.PAUSED, "поднятия приостановлены")
-            self._sleep(2)
+            self._sleep(self._pause_wait())
             return
 
         targets = self._due_resumes(force_bump)
@@ -642,6 +661,7 @@ class BumpEngine:
         self.account.save()
         with self._lock:
             self._auth_needed = True
+            self._auth_reason = str(exc)
         self._set_phase(Phase.AUTH, "требуется повторный вход")
 
     def _on_network_error(self, exc: NetworkError) -> None:
