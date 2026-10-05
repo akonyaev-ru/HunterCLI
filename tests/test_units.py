@@ -383,6 +383,33 @@ def run() -> bool:
     report.check("мусор в справочнике не роняет",
                  salary.rates_from_dictionary(None) == {})
 
+    report.section("Вакансии, опубликованные за сутки")
+    # Даты — в виде сервиса: смещение без двоеточия, как в живом ответе.
+    moment = datetime(2026, 10, 5, 21, 0, tzinfo=timezone(timedelta(hours=3)))
+
+    def ago(hours: float) -> str:
+        return (moment - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%S+0300")
+
+    vacancies = [
+        {"id": "1", "published_at": ago(1)},
+        {"id": "2", "published_at": ago(23.5)},
+        {"id": "3", "published_at": ago(24.5)},           # старше суток
+        {"id": "1", "published_at": ago(1)},              # то же под вторым резюме
+        {"id": "4"},                                      # без даты
+        {"id": "5", "published_at": "вчера"},              # битая дата
+        {"id": "6", "published_at": ago(0)},              # ровно сейчас
+        "мусор",
+        {"published_at": ago(2)},                         # без id — не с чем сверить
+    ]
+    fresh_count = getattr(salary, "fresh_count", None)
+    counted = fresh_count(vacancies, moment) if fresh_count else None
+    report.check("за сутки посчитаны свежие, по одному разу", counted == 3,
+                 f"-> {counted} (ждали 1, 2, 6)")
+    report.check("пустой подбор — ноль",
+                 fresh_count([], moment) == 0 if fresh_count else False)
+    report.check("в сводке зарплат есть место под это число",
+                 getattr(salary.Summary(), "fresh", None) == 0)
+
     return report.summary()
 
 

@@ -354,6 +354,19 @@ def run() -> bool:
     report.check("без приглашений о приглашении молчим",
                  "Приглашени" not in plain and "через" in plain, f"-> {plain!r}")
 
+    # Сторож: поднятий нет дольше порога. Окно свёрнуто — сказать надо здесь.
+    stuck = titled(stalled_for=7 * 3600)
+    report.check("поднятия не идут — первым в заголовке",
+                 stuck.startswith("поднятия не идут"), f"-> {stuck!r}")
+    report.check("и вытесняют отсчёт", "через" not in stuck, f"-> {stuck!r}")
+    report.check("название программы на месте и тут", stuck.endswith(APP_NAME))
+    both = titled(stalled_for=7 * 3600, invitations_pending=2)
+    report.check("пришедшее приглашение при этом не теряется",
+                 both.startswith("поднятия не идут") and "приглашение" in both, f"-> {both!r}")
+    report.check("«нужен вход» старше сторожа",
+                 titled(stalled_for=7 * 3600, phase=Phase.AUTH).startswith("нужен вход"))
+    report.check("без сторожа о нём молчим", "поднятия не идут" not in plain, f"-> {plain!r}")
+
     named = window_title(snap, "Алексей К.")
     report.check("с несколькими аккаунтами имя впереди",
                  named.startswith("Алексей К.") and "через" in named, f"-> {named!r}")
@@ -495,6 +508,53 @@ def run() -> bool:
                      not head or "За всё время" in text)
         report.check(f"120x{height}: экран не вылезает",
                      len(lines) <= height and not [ln for ln in lines if len(ln) > 120])
+
+    report.section("Вакансии за сутки на экране статистики")
+    # Поле ставим после создания: на коде без него сводка не должна падать
+    # на незнакомом аргументе, а проверки — честно провалиться.
+    # covered=7: дней без данных нет — так у владельца с автозапуском. Строка о
+    # пропусках тогда не выводится, и на окне 120x40 место под число есть.
+    fresh_money = _report(covered=7, salary_median=185000, salary_low=150000,
+                          salary_high=230000, salary_count=96, salary_total=300)
+    fresh_money.salary_fresh = 41
+    fresh = _stats(fresh_money)
+    report.check("число видно", "Опубликовано за сутки" in fresh and "41" in fresh,
+                 "-> нет строки «Опубликовано за сутки … 41»")
+    report.check("строка — внутри раздела зарплат",
+                 0 <= fresh.find("Зарплаты по вашему") < fresh.find("Опубликовано за сутки"))
+    report.check("не считали — строки нет", "Опубликовано за сутки" not in money)
+    no_salary = _report(salary_count=0, salary_total=300)
+    no_salary.salary_fresh = 41
+    report.check("без раздела зарплат — и строки нет",
+                 "Опубликовано за сутки" not in _stats(no_salary))
+    # Сводка старше списка (решение 26): место под строку резервируется раньше
+    # разбивки по резюме. И больше места — не меньше содержимого.
+    crowded_money = _report(count=5, salary_median=185000, salary_low=150000,
+                            salary_high=230000, salary_count=96, salary_total=300)
+    crowded_money.salary_fresh = 41
+    seen_fresh, flips = False, []
+    for height in range(14, 61):
+        text = _stats(crowded_money, 120, height)
+        head = "Зарплаты по вашему" in text
+        line = "Опубликовано за сутки" in text
+        listing = "По резюме" in text
+        if line and not head:
+            flips.append(f"{height}: строка без раздела")
+        if head and listing and not line:
+            flips.append(f"{height}: разбивка есть, а строки нет")
+        if seen_fresh and not line:
+            flips.append(f"{height}: пропала при росте окна")
+        seen_fresh = seen_fresh or line
+    report.check("приоритет и монотонность по высоте 14–60", not flips, f"-> {flips[:3]}")
+    crowded_money.covered = 7
+    report.check("120x40 без пропусков в данных — строка видна",
+                 "Опубликовано за сутки" in _stats(crowded_money, 120, 40))
+    # Честность о собственных цифрах старше рыночного числа (решения 26, 35):
+    # на ровно заполненном экране строка о пропусках остаётся, число уступает.
+    crowded_money.covered = 5
+    gaps = _stats(crowded_money, 120, 40)
+    report.check("120x40 с пропусками — место за строкой о пропусках",
+                 "5 из 7 дней" in gaps and "Опубликовано за сутки" not in gaps)
 
     report.section("Статистика помещается в окно")
     # Резюме заведомо больше, чем строк: разбивка обязана обрезаться, а не

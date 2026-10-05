@@ -181,6 +181,8 @@ def record_salary(uid: str, summary: Any, *, now: str = "") -> bool:
             "high": int(summary.high),
             "count": int(summary.count),
             "total": int(summary.total),
+            # Одно число, как и всё здесь: ни названий, ни ссылок (решение 28).
+            "fresh": int(getattr(summary, "fresh", 0) or 0),
         }
         return save(data)
 
@@ -297,6 +299,9 @@ class Report:
     salary_high: int = 0
     salary_count: int = 0
     salary_total: int = 0
+    #: Сколько подобранных вакансий опубликовано за сутки. Ноль = не считали
+    #: (в срезах до 2026.17 поля нет) или не было ни одной — строки тогда нет.
+    salary_fresh: int = 0
 
     @property
     def empty(self) -> bool:
@@ -384,4 +389,5 @@ def report(uid: str, *, days: int = WINDOW_DAYS, now: str = "") -> Report:
         salary_high=int(money.get("high", 0) or 0),
         salary_count=int(money.get("count", 0) or 0),
         salary_total=int(money.get("total", 0) or 0),
+        salary_fresh=int(money.get("fresh", 0) or 0),
     )

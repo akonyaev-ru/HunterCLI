@@ -82,13 +82,24 @@ class FakeHH:
         # Подбор вакансий под резюме и справочник валют.
         self.similar_calls: list[str] = []
         self.dict_calls = 0
+        # Даты публикации — как у живого сервиса (смещение без двоеточия). За
+        # сутки опубликованы v1, v3 и v4; подбор у обоих резюме один и тот же,
+        # поэтому без учёта id вышло бы шесть, а не три. Время — UTC с «+0000»:
+        # местное время с зашитым «+0300» на раннере GitHub (UTC) сдвинуло бы
+        # v4 за сутки, и проверка краснела бы на правильном коде.
+        hours_ago = lambda h: time.strftime(
+            "%Y-%m-%dT%H:%M:%S+0000", time.gmtime(time.time() - h * 3600))
         self.vacancies = [
-            {"salary": {"from": 100000, "to": 140000, "currency": "RUR", "gross": False}},
-            {"salary": {"from": 160000, "to": None, "currency": "RUR", "gross": False}},
-            {"salary": {"from": 200000, "to": 240000, "currency": "RUR", "gross": True}},
-            {"salary": {"from": 2000, "to": None, "currency": "EUR", "gross": False}},
-            {"salary": None},
-            {"salary": None},
+            {"id": "v1", "published_at": hours_ago(1),
+             "salary": {"from": 100000, "to": 140000, "currency": "RUR", "gross": False}},
+            {"id": "v2", "published_at": hours_ago(30),
+             "salary": {"from": 160000, "to": None, "currency": "RUR", "gross": False}},
+            {"id": "v3", "published_at": hours_ago(2),
+             "salary": {"from": 200000, "to": 240000, "currency": "RUR", "gross": True}},
+            {"id": "v4", "published_at": hours_ago(22),
+             "salary": {"from": 2000, "to": None, "currency": "EUR", "gross": False}},
+            {"id": "v5", "salary": None},
+            {"id": "v6", "published_at": "не дата", "salary": None},
         ]
         self.active_calls = 0
         self.hidden: list[str] = []
@@ -278,6 +289,7 @@ def run() -> bool:
     # пойдёт стучаться в наш поддельный (и уже мёртвый) сервер.
     real_api_root, real_refresh = hh.API_ROOT, auth.refresh_token
     real_token_url, real_gap = auth.TOKEN_URL, engine_mod.MIN_SYNC_GAP_SEC
+    real_stall = getattr(engine_mod, "STALL_AFTER_SEC", None)
     hh.API_ROOT = f"http://127.0.0.1:{PORT}"
 
     try:
@@ -438,6 +450,12 @@ def run() -> bool:
                      f"-> {STATE.similar_calls}")
         report.check("про зарплаты сказано в журнале",
                      any("Зарплаты по профилю" in e.text for e in engine.log.tail(200)))
+        stored = (_h.load()["accounts"].get(engine.account.uid) or {}).get("salary") or {}
+        report.check("вакансий за сутки — три, каждая один раз", stored.get("fresh") == 3,
+                     f"-> {stored.get('fresh')!r}")
+        report.check("про них сказано в журнале",
+                     any("опубликовано за сутки: 3" in e.text for e in engine.log.tail(200)),
+                     f"-> {[e.text for e in engine.log.tail(200) if 'сутки' in e.text][:2]}")
 
         before_calls = list(STATE.similar_calls)
         engine.request_sync()
@@ -679,6 +697,96 @@ def run() -> bool:
         engine11.join()
         engine_mod.MIN_SYNC_GAP_SEC = real_gap
 
+        report.section("Сторож: поднятия не идут — это видно")
+        from huntercli.ui.dashboard import window_title
+
+        def stalled(engine_) -> float:
+            return getattr(engine_.snapshot(), "stalled_for", None) or 0.0
+
+        def stall_errors(log_) -> list[str]:
+            return [e.text for e in log_.tail(300) if e.level == "error" and "Поднятий нет" in e.text]
+
+        # Шесть часов ужимаем до трёх секунд: проверяется правило, а не часы.
+        engine_mod.STALL_AFTER_SEC = 3
+        with STATE.lock:
+            STATE.valid_token = "GOOD-TOKEN"
+            for item in STATE.resumes.values():
+                item["can_publish_or_update"] = True
+                item["next_publish_at"] = _iso(-60)
+            STATE.quota_blocked = {"r1", "r2"}  # сервис отказывает в каждом поднятии
+        engine12, _, log12 = _make_engine("GOOD-TOKEN")
+        engine12.start()
+        _wait_for(lambda: engine12.snapshot().last_sync_at is not None, 20)
+        report.check("пока порог не прошёл — тихо", stalled(engine12) == 0)
+        time.sleep(4)
+        report.check("поднятий нет дольше порога — сторож заметил", stalled(engine12) > 3,
+                     f"-> {stalled(engine12)!r}")
+        title = window_title(engine12.snapshot())
+        report.check("в заголовке окна сказано прямо", title.startswith("поднятия не идут"),
+                     f"-> {title!r}")
+        engine12.request_sync()
+        time.sleep(2)
+        report.check("в журнале одна красная строка", len(stall_errors(log12)) == 1,
+                     f"-> {stall_errors(log12)}")
+        report.check("в ней последняя причина отказа",
+                     any("лимит" in text for text in stall_errors(log12)),
+                     f"-> {stall_errors(log12)}")
+        engine12.request_sync()
+        time.sleep(2)
+        report.check("пока поднятий нет, строка не повторяется", len(stall_errors(log12)) == 1,
+                     f"-> {len(stall_errors(log12))}")
+
+        engine12.toggle_pause()
+        time.sleep(1)
+        report.check("на паузе сторож молчит", stalled(engine12) == 0)
+        # «пауза» тут не проверить: у поддельного сервиса висит непрочитанное
+        # приглашение, а оно старше паузы (AC-5). Главное — сторожа в заголовке нет.
+        report.check("и в заголовке его нет",
+                     "поднятия не идут" not in window_title(engine12.snapshot()))
+        engine12.toggle_pause()
+        time.sleep(1)
+        report.check("после паузы отсчёт начинается заново", stalled(engine12) == 0,
+                     f"-> {stalled(engine12)!r}")
+        time.sleep(3.5)
+        report.check("и снова срабатывает, если поднятий так и нет", stalled(engine12) > 3)
+
+        with STATE.lock:
+            STATE.quota_blocked = set()
+        engine12.request_bump()
+        _wait_for(lambda: any("снова идут" in e.text for e in log12.tail(100)), 15)
+        report.check("поднятие прошло — об этом сказано",
+                     any(e.level == "ok" and "Поднятия снова идут" in e.text
+                         for e in log12.tail(100)))
+        report.check("и сторож успокоился", stalled(engine12) == 0, f"-> {stalled(engine12)!r}")
+        engine12.stop()
+        engine12.join()
+
+        report.section("Сторож: где поднятий не ждут, там он молчит")
+        quiet_engine, quiet_account, _ = _make_engine("GOOD-TOKEN")  # не запущен
+        quiet_engine._resumes = [hh.Resume(id="q1", title="Юрист", planned_at=time.time())]
+        quiet_engine._watch_from = time.time() - 100
+        report.check("100 с без поднятий при пороге 3 с — сработал", stalled(quiet_engine) > 3)
+        quiet_engine._phase = Phase.OFFLINE
+        report.check("без сети — молчит (в заголовке и так «нет сети»)", stalled(quiet_engine) == 0)
+        quiet_engine._phase = Phase.AUTH
+        report.check("при «нужен вход» — молчит", stalled(quiet_engine) == 0)
+        quiet_engine._phase = Phase.WAITING
+        quiet_engine._resumes[0].planned_at = None
+        report.check("резюме не под автопилотом — молчит", stalled(quiet_engine) == 0)
+        quiet_engine._resumes[0].planned_at = time.time()
+        quiet_account.settings.quiet_hours = [23, 7]
+        report.check("тихие часы прибавлены к порогу", stalled(quiet_engine) == 0)
+        quiet_account.settings.quiet_hours = ["полночь", None]
+        try:
+            value = stalled(quiet_engine)
+            crashed = ""
+        except Exception as exc:  # noqa: BLE001 - падать как раз нельзя
+            value, crashed = 0.0, repr(exc)
+        report.check("испорченные тихие часы не роняют, порог прежний",
+                     not crashed and value > 3, f"-> {crashed or value}")
+        quiet_account.settings.quiet_hours = None
+        engine_mod.STALL_AFTER_SEC = real_stall
+
 
         report.section("Сеть пропала")
         server.shutdown()
@@ -697,6 +805,8 @@ def run() -> bool:
     finally:
         hh.API_ROOT, auth.refresh_token = real_api_root, real_refresh
         auth.TOKEN_URL, engine_mod.MIN_SYNC_GAP_SEC = real_token_url, real_gap
+        if real_stall is not None:
+            engine_mod.STALL_AFTER_SEC = real_stall
         try:
             server.server_close()
         except Exception:

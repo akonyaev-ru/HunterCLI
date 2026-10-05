@@ -6,7 +6,7 @@ import random
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 
 from . import history
 from .config import Account
@@ -24,6 +24,11 @@ POST_BUMP_DELAY_SEC = 4
 FAILURE_COOLDOWN_SEC = 30 * 60
 #: Шаг «просыпания» цикла — от него зависит отзывчивость на горячие клавиши.
 TICK_SEC = 1.0
+#: Поднятий нет дольше этого — сторож говорит «поднятия не идут». Сервис
+#: разрешает поднимать раз в 4 часа, после отказа пауза 30 минут: 6 часов —
+#: с запасом над обычным. API соискателя закрыт для сторонних программ, и если
+#: сервис что-то поменяет, поломка будет тихой — окно-то свёрнуто.
+STALL_AFTER_SEC = 6 * 3600
 
 
 class Phase:
@@ -79,6 +84,8 @@ class Snapshot:
     #: Ноль — показывать нечего. Живёт в слепке, а не в движке, потому что
     #: заголовок окна собирается из слепка и больше ниоткуда.
     invitations_pending: int = 0
+    #: Сколько секунд нет поднятий, если сторож сработал; ноль — всё идёт как надо.
+    stalled_for: float = 0.0
 
     @property
     def managed_count(self) -> int:
@@ -138,6 +145,11 @@ class BumpEngine:
         #: Спрашивали ли уже, кто владелец аккаунта. Сервис мог и не ответить
         #: именем — тогда дёргать его каждую синхронизацию незачем.
         self._identified = False
+        #: Сторож: с какого момента ждём поднятия. Сдвигается на каждом успехе и
+        #: на всём, после чего поднятий и не было бы: запуск, пауза, вход, сеть.
+        self._watch_from = time.time()
+        #: Сказали ли в журнале «поднятий нет». Говорим один раз, пока не пошли.
+        self._stall_announced = False
 
         self._wake_timer = WakeTimer()
         self._sleep_detector = SleepDetector()
@@ -174,6 +186,8 @@ class BumpEngine:
         with self._lock:
             self._paused = not self._paused
             paused = self._paused
+            if not paused:
+                self._watch_from = time.time()  # на паузе поднятий и не ждали
         self.log.info("Автопилот на паузе" if paused else "Автопилот снова в работе")
         self._wake.set()
         return paused
@@ -194,6 +208,7 @@ class BumpEngine:
                 managed = managed + [target.id]
                 verdict = f"«{target.title}» снова в работе"
             self.account.managed_resumes = managed
+            self._watch_from = time.time()
             self._replan_locked()
         self.account.save()
         self.log.info(verdict)
@@ -218,6 +233,7 @@ class BumpEngine:
                 paused=self._paused,
                 offline_since=self._offline_since,
                 invitations_pending=self._invitations_pending,
+                stalled_for=self._stalled_for_locked(time.time()),
             )
 
     def brief(self) -> tuple[str, str]:
@@ -240,6 +256,7 @@ class BumpEngine:
         with self._lock:
             self._auth_needed = False
             self._auth_reason = ""
+            self._watch_from = time.time()
             self._force_sync = True
             self._phase = Phase.SYNCING
             # Вход мог быть и в другой аккаунт — владельца выясним заново.
@@ -312,6 +329,8 @@ class BumpEngine:
             self._resumes = fresh
             self._last_sync_at = time.time()
             self._replan_locked()
+            if self._offline_since is not None:
+                self._watch_from = time.time()  # без сети поднятий и не ждали
             self._offline_since = None
             managed = sum(1 for i in fresh if i.planned_at is not None)
 
@@ -447,11 +466,11 @@ class BumpEngine:
 
         try:
             rates = self.client.currency_rates()
-            raw: list = []
+            vacancies: list = []
             seen = 0
             for item in managed:
                 chunk, count = self.client.similar_vacancies(item.id)
-                raw.extend(chunk)
+                vacancies.extend(chunk)
                 seen += count
         except TokenError:
             raise
@@ -459,8 +478,12 @@ class BumpEngine:
             self.log.warn(f"Зарплаты по профилю посчитать не вышло: {exc}")
             return
 
-        summary = salary.summarize(raw, rates, seen)
+        summary = salary.summarize([v.get("salary") for v in vacancies], rates, seen)
+        # Та же выборка отвечает и на «есть ли куда откликнуться»: просмотры идут
+        # за откликами (разбор stats.json 2026-10-05), а запросов это не стоит.
+        summary.fresh = salary.fresh_count(vacancies, datetime.now(timezone.utc))
         history.record_salary(self.account.uid, summary)
+        self.log.step(f"Подходящих вакансий опубликовано за сутки: {summary.fresh}")
         if summary.empty:
             self.log.step(f"Зарплаты: у {seen} подобранных вакансий не указано ни одной")
             return
@@ -519,9 +542,13 @@ class BumpEngine:
                     self._session_bumps += 1
                     resume.problem = ""
                     resume.retry_after = 0.0
+                    self._watch_from = moment
+                    recovered, self._stall_announced = self._stall_announced, False
                 self.account.stats.record_bump(resume.title, moment)
                 history.record_bump(self.account.uid)
                 self.log.ok(f"«{resume.title}» поднято в поиске")
+                if recovered:
+                    self.log.ok("Поднятия снова идут")
             else:
                 self.account.stats.failed_bumps += 1
                 with self._lock:
@@ -563,6 +590,43 @@ class BumpEngine:
             self._next_action_at = min(planned) if planned else None
             self._wait_span = max(1.0, target - now)
         return target - now
+
+    def _stall_threshold(self) -> float:
+        """Порог сторожа. Тихие часы законно откладывают поднятия — прибавляем их."""
+        quiet = self.account.settings.quiet_hours
+        try:
+            if quiet and len(quiet) == 2 and int(quiet[0]) != int(quiet[1]):
+                return STALL_AFTER_SEC + ((int(quiet[1]) - int(quiet[0])) % 24) * 3600
+        except (TypeError, ValueError):
+            pass  # испорченные тихие часы — не повод ронять окно: порог прежний
+        return STALL_AFTER_SEC
+
+    def _stalled_for_locked(self, now: float) -> float:
+        """Сколько нет поднятий, если сторож сработал; иначе ноль.
+
+        Пауза, обрыв сети и слетевший вход сторожа не будят: поднятий там и не
+        ждут, а в заголовке у этих состояний свои слова. Без резюме под
+        автопилотом ждать тоже нечего.
+        """
+        if self._paused or self._auth_needed or self._phase in (Phase.OFFLINE, Phase.AUTH):
+            return 0.0
+        if not any(item.planned_at is not None for item in self._resumes):
+            return 0.0
+        idle = now - self._watch_from
+        return idle if idle > self._stall_threshold() else 0.0
+
+    def _watch(self) -> None:
+        """Сторож: сказать в журнале, что поднятий нет, — один раз за перебой."""
+        with self._lock:
+            idle = self._stalled_for_locked(time.time())
+            if not idle or self._stall_announced:
+                return
+            self._stall_announced = True
+            problems = [item.problem for item in self._resumes
+                        if item.planned_at is not None and item.problem]
+        reason = f" Последний отказ: {problems[0]}." if problems else ""
+        self.log.error(f"Поднятий нет уже {human_nap(idle)}.{reason} "
+                       "Если так и останется — возможно, сервис что-то изменил")
 
     def _pause_wait(self) -> float:
         """На паузе: сколько спать до следующей обычной синхронизации."""
@@ -650,6 +714,7 @@ class BumpEngine:
                 self._sleep(POST_BUMP_DELAY_SEC)
                 self._sync()
 
+        self._watch()
         self._set_phase(Phase.WAITING, "ждём разрешённого времени")
         pause = self._compute_wait()
         self._arm_wake_timer(pause)

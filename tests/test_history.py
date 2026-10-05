@@ -220,6 +220,25 @@ def run() -> bool:
                  "2025-01-01" not in (entry["resumes"]["1"].get("invites") or {}),
                  f"-> {sorted(entry['resumes']['1'].get('invites') or {})}")
 
+    report.section("Вакансии за сутки хранятся рядом с зарплатами")
+    from huntercli import salary
+
+    _reset()
+    _feed("a", {"2026-08-21": 100, "2026-08-22": 120})
+    summary = salary.Summary(median=150000, low=120000, high=180000, count=90, total=300)
+    summary.fresh = 41  # и на коде без поля проверка должна провалиться, а не упасть
+    history.record_salary("a", summary, now="2026-08-22")
+    stored = history.load()["accounts"]["a"]["salary"]
+    report.check("в срез легло одно число", stored.get("fresh") == 41, f"-> {stored}")
+    report.check("сводка его видит",
+                 getattr(history.report("a", now="2026-08-22"), "salary_fresh", None) == 41)
+    # Срез прежних версий поля не знает — это «не считали», а не ошибка.
+    data = history.load()
+    data["accounts"]["a"]["salary"].pop("fresh", None)
+    history.save(data)
+    report.check("в старом срезе поля нет — ноль, а не падение",
+                 getattr(history.report("a", now="2026-08-22"), "salary_fresh", None) == 0)
+
     _reset()
     return report.summary()
 

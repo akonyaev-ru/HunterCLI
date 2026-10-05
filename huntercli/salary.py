@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import statistics
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
 
 #: Ставка НДФЛ для приведения «до вычета» к «на руки».
@@ -45,6 +46,9 @@ class Summary:
     high: int = 0
     count: int = 0
     total: int = 0
+    #: Сколько подобранных вакансий опубликовано за последние сутки (`fresh_count`).
+    #: Живёт здесь, потому что считается по той же выборке и в тот же миг.
+    fresh: int = 0
 
     @property
     def empty(self) -> bool:
@@ -121,6 +125,49 @@ def summarize(salaries: Iterable[Any], rates: dict[str, float], total: int) -> S
         low, high = values[0], values[-1]
     return Summary(median=_round(median), low=_round(low), high=_round(high),
                    count=len(values), total=total)
+
+
+#: Что считать «за сутки».
+FRESH_WINDOW = timedelta(hours=24)
+
+
+def fresh_count(vacancies: Iterable[Any], now: datetime) -> int:
+    """Сколько вакансий опубликовано за последние сутки, каждая один раз.
+
+    Дата — `published_at` сервиса. Отличить новую вакансию от поднятой
+    работодателем по ней нельзя: `created_at` совпадает с ней по дню у всех
+    854 вакансий живой выборки 2026-10-05, — поэтому и слово «опубликовано».
+    Вакансия под двумя резюме приходит дважды, и считается она по `id`;
+    без `id` или с негодной датой не считается вовсе.
+    """
+    seen: set[str] = set()
+    for item in vacancies:
+        if not isinstance(item, dict) or not item.get("id"):
+            continue
+        published = _parse_time(item.get("published_at"))
+        if published is None or not timedelta(0) <= now - published <= FRESH_WINDOW:
+            continue
+        seen.add(str(item["id"]))
+    return len(seen)
+
+
+def _parse_time(value: Any) -> datetime | None:
+    """Дата сервиса (`2026-10-05T20:44:57+0300`). Негодное -> None.
+
+    Та же разборка, что `hh.parse_hh_time`: взять оттуда нельзя — `hh`
+    импортирует этот модуль, и обратный импорт замкнул бы круг.
+    """
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip().replace("Z", "+00:00")
+    # Смещение без двоеточия: fromisoformat до 3.11 такое не ест.
+    if len(text) > 5 and text[-5] in "+-" and text[-3] != ":":
+        text = f"{text[:-2]}:{text[-2:]}"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
 
 
 def _round(value: float) -> int:
