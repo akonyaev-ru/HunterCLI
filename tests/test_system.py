@@ -100,15 +100,26 @@ def run() -> bool:
                  autostart.command_in(xml) == EXE)
     report.check("мусор вместо XML — путь неизвестен", autostart.command_in("не xml") is None)
     # Так schtasks отвечает на самом деле (проверено 2026-10-05): XML задания
-    # в трубу идёт в кодовой странице консоли, у владельца — cp866.
-    report.check("ответ планировщика в cp866 читается вместе с кириллицей",
-                 autostart.command_in(autostart._decode(xml.encode("cp866"))) == EXE)
+    # в трубу идёт в кодовой странице консоли, у владельца — cp866. Страницу
+    # подставляем как у владельца: на раннере GitHub она 437, и проверка,
+    # завязанная на машину, там краснела на правильном коде.
+    names = autostart._console_encodings()
+    report.check("кодовая страница консоли берётся у Windows, сразу после UTF-8",
+                 names[0] == "utf-8" and all(n.startswith("cp") for n in names[1:]),
+                 f"-> {names}")
+    keep_encodings = autostart._console_encodings
+    autostart._console_encodings = lambda: ["utf-8", "cp866", "cp1251"]
+    try:
+        report.check("ответ планировщика в cp866 читается вместе с кириллицей",
+                     autostart.command_in(autostart._decode(xml.encode("cp866"))) == EXE)
+        report.check("сообщение в кодировке консоли читается",
+                     autostart._decode("ОШИБКА: отказано".encode("cp866")) == "ОШИБКА: отказано")
+    finally:
+        autostart._console_encodings = keep_encodings
     report.check("ответ планировщика в UTF-16 читается",
                  autostart.command_in(autostart._decode(xml.encode("utf-16"))) == EXE)
     report.check("и без метки порядка байтов тоже",
                  autostart.command_in(autostart._decode(xml.encode("utf-16-le"))) == EXE)
-    report.check("сообщение в кодировке консоли читается",
-                 autostart._decode("ОШИБКА: отказано".encode("cp866")) == "ОШИБКА: отказано")
 
     report.section("Включение, выключение, сверка пути")
     fake = FakeScheduler()
