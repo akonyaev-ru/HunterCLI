@@ -11,7 +11,16 @@ from datetime import datetime, timezone
 from . import history
 from .config import Account
 from . import salary
-from .hh import ActiveTalk, HHClient, HHError, NetworkError, Resume, TokenError
+from .hh import (
+    NEGOTIATIONS_PAGE,
+    ActiveTalk,
+    HHClient,
+    HHError,
+    NetworkError,
+    Resume,
+    TokenError,
+    newest_first,
+)
 from .logbus import LogBus, TaggedLog
 from .power import SleepDetector, WakeTimer
 
@@ -386,9 +395,12 @@ class BumpEngine:
             self._invitations_pending = len(pending)
         if len(pending) > was:
             new = len(pending) - was
+            # Ctrl+щелчок ведёт на страницу откликов: сами приглашения — числом
+            # (решение 28), а смотреть и отвечать — на сайте.
             self.log.ok(f"Приглашение! Новых — {new}, всего непрочитанных — {len(pending)}"
                         if new > 1 else
-                        f"Приглашение! Непрочитанных — {len(pending)}")
+                        f"Приглашение! Непрочитанных — {len(pending)}",
+                        link=NEGOTIATIONS_PAGE)
 
         self._cleanup(talks)
 
@@ -468,10 +480,12 @@ class BumpEngine:
             rates = self.client.currency_rates()
             vacancies: list = []
             seen = 0
+            per_resume: list[tuple[Resume, list, str]] = []
             for item in managed:
-                chunk, count = self.client.similar_vacancies(item.id)
+                chunk, count, site = self.client.similar_vacancies(item.id)
                 vacancies.extend(chunk)
                 seen += count
+                per_resume.append((item, chunk, site))
         except TokenError:
             raise
         except HHError as exc:
@@ -481,9 +495,18 @@ class BumpEngine:
         summary = salary.summarize([v.get("salary") for v in vacancies], rates, seen)
         # Та же выборка отвечает и на «есть ли куда откликнуться»: просмотры идут
         # за откликами (разбор stats.json 2026-10-05), а запросов это не стоит.
-        summary.fresh = salary.fresh_count(vacancies, datetime.now(timezone.utc))
+        now = datetime.now(timezone.utc)
+        summary.fresh = salary.fresh_count(vacancies, now)
         history.record_salary(self.account.uid, summary)
-        self.log.step(f"Подходящих вакансий опубликовано за сутки: {summary.fresh}")
+        # Строка на каждое резюме: у каждого свой подбор, и Ctrl+щелчок ведёт
+        # именно в него, свежие сверху. Общее число (каждая вакансия один раз)
+        # остаётся на экране статистики.
+        for item, chunk, site in per_resume:
+            self.log.step(
+                f"Подходящих вакансий опубликовано за сутки: "
+                f"{salary.fresh_count(chunk, now)} — «{item.title}»",
+                link=newest_first(site),
+            )
         if summary.empty:
             self.log.step(f"Зарплаты: у {seen} подобранных вакансий не указано ни одной")
             return

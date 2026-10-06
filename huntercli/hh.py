@@ -6,6 +6,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import requests
 
@@ -15,6 +16,11 @@ from .logbus import LogBus
 
 API_ROOT = "https://api.hh.ru"
 CLIENT_UA = "HunterCLI/2.0 (resume autopilot)"
+
+#: Страница откликов на сайте — туда ведёт запись журнала о приглашении. Своего
+#: адреса для неё сервис не отдаёт; маршрут проверен 2026-10-06: без входа 403,
+#: а выдуманный путь рядом — 404.
+NEGOTIATIONS_PAGE = "https://hh.ru/applicant/negotiations"
 
 RETRYABLE = {429, 500, 502, 503, 504}
 
@@ -44,6 +50,22 @@ def token_is_sendable(token: str) -> bool:
     except UnicodeEncodeError:
         return False
     return True
+
+
+def newest_first(url: str | None) -> str:
+    """Адрес подбора на сайте -> тот же подбор, свежие вакансии сверху.
+
+    Сам адрес отдаёт сервис (`alternate_url` подбора); формат сортировки
+    подсмотрен у него же: запрос с `order_by=publication_time` вернул адрес
+    с этим параметром (2026-10-06). Прежняя сортировка заменяется.
+    """
+    if not url:
+        return ""
+    parts = urlsplit(url)
+    query = [(key, value) for key, value in parse_qsl(parts.query, keep_blank_values=True)
+             if key != "order_by"]
+    query.append(("order_by", "publication_time"))
+    return urlunsplit(parts._replace(query=urlencode(query)))
 
 
 def parse_hh_time(value: str | None) -> datetime | None:
@@ -482,10 +504,11 @@ class HHClient:
         return salary.rates_from_dictionary(_json_or_none(response))
 
     def similar_vacancies(self, resume_id: str, pages: int = SALARY_PAGES
-                          ) -> tuple[list[Any], int]:
+                          ) -> tuple[list[Any], int, str]:
         """Вакансии, подобранные сервисом под резюме.
 
-        Возвращает (сами вакансии, сколько их просмотрено). В списке лежат и
+        Возвращает (сами вакансии, сколько их просмотрено, адрес этого подбора
+        на сайте — пусто, если сервис его не дал). В списке лежат и
         те, где зарплаты нет: их доля — часть ответа, без неё медиана вводит в
         заблуждение. Вакансии целиком, а не только `salary`: из той же выборки
         считается, сколько опубликовано за сутки, — без лишних запросов.
@@ -495,6 +518,7 @@ class HHClient:
         """
         found: list[Any] = []
         seen = 0
+        site = ""
         for page in range(max(1, pages)):
             response = self._call("GET", f"/resumes/{resume_id}/similar_vacancies",
                                   params={"per_page": SALARY_PAGE, "page": page})
@@ -502,6 +526,7 @@ class HHClient:
                 detail = explain_errors(_json_or_none(response))
                 raise HHError(detail or f"на подбор вакансий пришёл код {response.status_code}")
             data = _json_or_none(response) or {}
+            site = site or str(data.get("alternate_url") or "")
             items = data.get("items")
             if not isinstance(items, list) or not items:
                 break
@@ -511,7 +536,7 @@ class HHClient:
                     found.append(item)
             if page + 1 >= int(data.get("pages") or 1):
                 break
-        return found, seen
+        return found, seen, site
 
     def hide(self, talk_id: str) -> tuple[bool, str]:
         """Скрыть обращение. Возвращает (успех, пояснение).

@@ -118,6 +118,18 @@ def _render(board_setup, snap, log, width, height, tabs=None, active=0) -> str:
     return console.export_text()
 
 
+def _render_both(snap, log, width=120, height=40) -> tuple[str, str]:
+    """(сырой поток терминала, видимый текст). Ссылки видны только в первом:
+    Windows Terminal получает их последовательностью ESC ] 8 и прячет."""
+    console = Console(theme=THEME, highlight=False, file=io.StringIO(), width=width,
+                      height=height, force_terminal=True, color_system="truecolor",
+                      record=True, legacy_windows=False)
+    board = Dashboard(console, log)
+    board.tick = 4
+    console.print(board.render(snap, None, 0))
+    return console.file.getvalue(), console.export_text()
+
+
 TOP, BOTTOM = ("╭", "┌"), ("╰", "└")
 
 
@@ -555,6 +567,34 @@ def run() -> bool:
     gaps = _stats(crowded_money, 120, 40)
     report.check("120x40 с пропусками — место за строкой о пропусках",
                  "5 из 7 дней" in gaps and "Опубликовано за сутки" not in gaps)
+
+    report.section("Ссылки Ctrl+щелчком")
+    resume_page = "https://hh.example/resume/abc123"
+    invites_page = "https://hh.example/applicant/negotiations"
+    linked_snap = _demo_snapshot()
+    linked_snap.resumes[0].url = resume_page
+    linked_log = _demo_log()
+    try:
+        linked_log.ok("Приглашение! Непрочитанных — 1", link=invites_page)
+    except TypeError:  # на коде без ссылок — провал проверки, а не падение
+        linked_log.ok("Приглашение! Непрочитанных — 1")
+    raw, seen = _render_both(linked_snap, linked_log)
+    osc = "\x1b]8;"
+    report.check("название резюме — ссылка на резюме",
+                 osc in raw and resume_page in raw, "-> адреса резюме в потоке нет")
+    report.check("запись о приглашении — ссылка на отклики", invites_page in raw,
+                 "-> адреса страницы откликов в потоке нет")
+    report.check("адрес глазами не виден", resume_page not in seen and invites_page not in seen)
+    plain_log = _demo_log()
+    plain_log.ok("Приглашение! Непрочитанных — 1")
+    _, without = _render_both(_demo_snapshot(), plain_log)
+    # Цифры прячем: в обоих снимках часы журнала и обратный отсчёт, и на стыке
+    # секунд они расходятся (урок 2026-08-28 — не сравнивать строки со временем).
+    digitless = lambda text: re.sub(r"\d", "0", text)
+    report.check("ссылки не меняют вёрстку: текст на экране тот же",
+                 digitless(seen) == digitless(without))
+    raw_plain, _ = _render_both(_demo_snapshot(), _demo_log())
+    report.check("без адресов — ни одной ссылки", osc not in raw_plain)
 
     report.section("Статистика помещается в окно")
     # Резюме заведомо больше, чем строк: разбивка обязана обрезаться, а не

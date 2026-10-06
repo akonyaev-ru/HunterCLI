@@ -11,6 +11,7 @@ from rich.align import Align
 from rich.console import Console, Group, RenderableType
 from rich.layout import Layout
 from rich.panel import Panel
+from rich.style import Style
 from rich.table import Table
 from rich.text import Text
 
@@ -292,6 +293,8 @@ class Dashboard:
                 return Text("")
             line = Text(f"  {entries[0].clock}  {entries[0].text}", style=MUTED,
                         no_wrap=True, overflow="ellipsis")
+            if entries[0].link:
+                line.stylize(Style(link=entries[0].link))
         else:
             return Text("")
         line.truncate(max(4, width), overflow="ellipsis")
@@ -354,6 +357,10 @@ class Dashboard:
         shown, used = self._fit_resumes(snap, rows)
         for index, item in shown:
             name = Text(item.title, style="white", no_wrap=True, overflow="ellipsis")
+            if item.url:
+                # Ctrl+щелчок открывает резюме на сайте. Ширину ссылка не меняет:
+                # терминал прячет адрес, а без поддержки ссылок это обычный текст.
+                name.stylize(Style(link=item.url))
             if item.problem:
                 # Отступ и уголок: без них причина отказа читается как название
                 # следующего резюме. Символ рамочный — он есть в любом шрифте
@@ -626,6 +633,8 @@ class Dashboard:
                     WARN_COLOR if entry.level == WARN else "white"
                 )
                 line = Text(entry.text, style=text_style, no_wrap=True, overflow="ellipsis")
+                if entry.link:
+                    line.stylize(Style(link=entry.link))
                 line.truncate(room, overflow="ellipsis")
                 grid.add_row(entry.clock, Text(mark, style=color), line)
             body = grid

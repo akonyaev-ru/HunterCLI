@@ -26,6 +26,9 @@ class Entry:
     text: str
     #: Сквозной номер записи — по нему безопасно продолжать чтение журнала.
     seq: int = 0
+    #: Страница сайта, которую открывает Ctrl+щелчок по записи. Только для
+    #: экрана: в файл журнала не пишется, там текст остаётся прежним.
+    link: str = ""
 
     @property
     def clock(self) -> str:
@@ -48,23 +51,23 @@ class TaggedLog:
         tag = self.tag() if callable(self.tag) else self.tag
         return f"{tag} · " if tag else ""
 
-    def add(self, level: str, text: str) -> None:
-        self._bus.add(level, self._prefix() + text)
+    def add(self, level: str, text: str, link: str = "") -> None:
+        self._bus.add(level, self._prefix() + text, link)
 
-    def ok(self, text: str) -> None:
-        self.add(OK, text)
+    def ok(self, text: str, link: str = "") -> None:
+        self.add(OK, text, link)
 
-    def info(self, text: str) -> None:
-        self.add(INFO, text)
+    def info(self, text: str, link: str = "") -> None:
+        self.add(INFO, text, link)
 
-    def step(self, text: str) -> None:
-        self.add(STEP, text)
+    def step(self, text: str, link: str = "") -> None:
+        self.add(STEP, text, link)
 
-    def warn(self, text: str) -> None:
-        self.add(WARN, text)
+    def warn(self, text: str, link: str = "") -> None:
+        self.add(WARN, text, link)
 
-    def error(self, text: str) -> None:
-        self.add(ERROR, text)
+    def error(self, text: str, link: str = "") -> None:
+        self.add(ERROR, text, link)
 
 
 class LogBus:
@@ -108,27 +111,27 @@ class LogBus:
         except OSError:
             self._file_ok = False
 
-    def add(self, level: str, text: str) -> None:
+    def add(self, level: str, text: str, link: str = "") -> None:
         with self._lock:
             self._revision += 1
-            entry = Entry(time.time(), level, text, self._revision)
+            entry = Entry(time.time(), level, text, self._revision, link or "")
             self._entries.append(entry)
         self._write_file(entry)
 
-    def ok(self, text: str) -> None:
-        self.add(OK, text)
+    def ok(self, text: str, link: str = "") -> None:
+        self.add(OK, text, link)
 
-    def info(self, text: str) -> None:
-        self.add(INFO, text)
+    def info(self, text: str, link: str = "") -> None:
+        self.add(INFO, text, link)
 
-    def step(self, text: str) -> None:
-        self.add(STEP, text)
+    def step(self, text: str, link: str = "") -> None:
+        self.add(STEP, text, link)
 
-    def warn(self, text: str) -> None:
-        self.add(WARN, text)
+    def warn(self, text: str, link: str = "") -> None:
+        self.add(WARN, text, link)
 
-    def error(self, text: str) -> None:
-        self.add(ERROR, text)
+    def error(self, text: str, link: str = "") -> None:
+        self.add(ERROR, text, link)
 
     # ------------------------------------------------------------- чтение
 

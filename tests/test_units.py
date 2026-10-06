@@ -255,6 +255,63 @@ def run() -> bool:
                  f"-> {[e.text for e in after]}")
     report.check("since с нуля отдаёт всё, что есть", len(bus.since(0)) == 3)
 
+    report.section("Ссылки в журнале")
+    from huntercli import hh as hh_mod
+    from huntercli.logbus import TaggedLog
+
+    page = "https://example.test/applicant/negotiations"
+    linked = LogBus(to_file=False)
+    try:
+        linked.ok("Приглашение! Непрочитанных — 1", link=page)
+        crashed = ""
+    except TypeError as exc:  # на коде без ссылок — провал проверки, а не падение
+        crashed = repr(exc)
+    first = (linked.tail(1) or [None])[0]
+    report.check("запись умеет нести ссылку",
+                 not crashed and getattr(first, "link", None) == page,
+                 f"-> {crashed or getattr(first, 'link', None)!r}")
+    plain = LogBus(to_file=False)
+    plain.info("без ссылки")
+    report.check("без ссылки — пустая строка, а не None",
+                 getattr(plain.tail(1)[0], "link", None) == "")
+    tagged = TaggedLog(linked, "Ирина")
+    try:
+        tagged.step("Подходящих вакансий опубликовано за сутки: 3 — «Юрист»", link=page)
+    except TypeError:
+        pass
+    last = (linked.tail(1) or [None])[0]
+    report.check("подписанный журнал ссылку не теряет",
+                 last is not None and last.text.startswith("Ирина · ")
+                 and getattr(last, "link", None) == page,
+                 f"-> {getattr(last, 'text', None)!r} {getattr(last, 'link', None)!r}")
+
+    on_disk = LogBus(to_file=True)
+    try:
+        on_disk.ok("Приглашение! Непрочитанных — 2", link=page)
+    except TypeError:
+        on_disk.ok("Приглашение! Непрочитанных — 2")
+    with open(paths_mod.log_path(), encoding="utf-8-sig") as fh:
+        last_line = fh.read().splitlines()[-1]
+    report.check("в файл журнала ссылка не пишется, текст прежний",
+                 last_line.endswith("Приглашение! Непрочитанных — 2") and page not in last_line,
+                 f"-> {last_line!r}")
+
+    newest_first = getattr(hh_mod, "newest_first", None)
+    service = ("https://hh.example/search/vacancy?enable_snippets=true"
+               "&items_on_page=100&resume=139da14c")
+    sorted_url = newest_first(service) if newest_first else ""
+    report.check("к адресу подбора добавлена сортировка по дате",
+                 "order_by=publication_time" in sorted_url and "resume=139da14c" in sorted_url,
+                 f"-> {sorted_url!r}")
+    resorted = newest_first(service + "&order_by=relevance") if newest_first else ""
+    report.check("прежняя сортировка заменяется, а не дублируется",
+                 resorted.count("order_by=") == 1 and "order_by=publication_time" in resorted,
+                 f"-> {resorted!r}")
+    report.check("без адреса — без ссылки",
+                 newest_first("") == "" and newest_first(None) == "" if newest_first else False)
+    report.check("адрес страницы откликов — на сайте",
+                 getattr(hh_mod, "NEGOTIATIONS_PAGE", "").endswith("/applicant/negotiations"))
+
     report.section("Сон, блокировка, крышка")
     detector = SleepDetector()
     report.check("обычное ожидание сном не считается", detector.check() == 0.0)

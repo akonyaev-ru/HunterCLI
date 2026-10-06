@@ -181,7 +181,10 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(403, {"errors": [{"type": "forbidden",
                                                         "value": "resume_not_available"}]})
                 items = [dict(v) for v in STATE.vacancies]
-            return self._send(200, {"items": items, "found": len(items),
+            # Адрес того же подбора на сайте — так его отдаёт живой сервис.
+            site = ("https://hh.example/search/vacancy?enable_snippets=true"
+                    f"&items_on_page=100&resume={rid}")
+            return self._send(200, {"items": items, "found": len(items), "alternate_url": site,
                                     "pages": 1, "page": 0, "per_page": 100})
         if self.path == "/resumes/mine":
             with STATE.lock:
@@ -361,6 +364,11 @@ def run() -> bool:
                      snap.invitations_pending < 2, f"-> {snap.invitations_pending}")
         report.check("про приглашение сказано в журнале",
                      any("Приглашение!" in e.text for e in engine.log.tail(200)))
+        invite = next((e for e in engine.log.tail(200) if "Приглашение!" in e.text), None)
+        report.check("запись о приглашении ведёт на страницу откликов сайта",
+                     invite is not None
+                     and getattr(invite, "link", "").endswith("/applicant/negotiations"),
+                     f"-> {getattr(invite, 'link', None)!r}")
         report.check("активная коллекция берётся одним запросом, а не перебором",
                      STATE.active_calls >= 1 and STATE.talks_calls == [0, 1],
                      f"-> active={STATE.active_calls}, полный={STATE.talks_calls}")
@@ -456,6 +464,20 @@ def run() -> bool:
         report.check("про них сказано в журнале",
                      any("опубликовано за сутки: 3" in e.text for e in engine.log.tail(200)),
                      f"-> {[e.text for e in engine.log.tail(200) if 'сутки' in e.text][:2]}")
+        fresh_lines = {e.text: getattr(e, "link", "") for e in engine.log.tail(200)
+                       if "опубликовано за сутки" in e.text}
+        by_resume = {title: next((link for text, link in fresh_lines.items()
+                                  if f"«{title}»" in text), None)
+                     for title in ("Юрист", "Дизайнер")}
+        report.check("строка на каждое резюме под автопилотом",
+                     all(link is not None for link in by_resume.values()),
+                     f"-> {list(fresh_lines)}")
+        report.check("каждая ведёт на подбор своего резюме, свежие сверху",
+                     "resume=r1" in (by_resume["Юрист"] or "")
+                     and "resume=r2" in (by_resume["Дизайнер"] or "")
+                     and all("order_by=publication_time" in (link or "")
+                             for link in by_resume.values()),
+                     f"-> {by_resume}")
 
         before_calls = list(STATE.similar_calls)
         engine.request_sync()
